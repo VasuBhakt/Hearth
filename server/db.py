@@ -338,6 +338,22 @@ def set_preference(key: str, value: Any) -> None:
             session.add(PreferenceModel(key=key, value=value))
         session.commit()
 
+def get_all_preferences() -> dict[str, Any]:
+    """Retrieve all stored family preferences as a key-value dictionary."""
+    with SessionLocal() as session:
+        models = session.scalars(select(PreferenceModel)).all()
+        return {m.key: m.value for m in models}
+
+def delete_preference(key: str) -> bool:
+    """Delete a stored preference by key."""
+    with SessionLocal() as session:
+        pref = session.get(PreferenceModel, key)
+        if pref:
+            session.delete(pref)
+            session.commit()
+            return True
+        return False
+
 # --- PlanCard CRUD ---
 
 def save_plan(plan: PlanCard) -> None:
