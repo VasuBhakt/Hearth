@@ -34,6 +34,8 @@ try:
         DEFAULT_DRIVE_SPEED_KMH,
         DEFAULT_TRAFFIC_BUFFER_MINUTES,
         DEFAULT_ARRIVAL_BUFFER_MINUTES,
+        WEATHER_RAIN_THRESHOLD_PERCENT,
+        BUFFER_KEYWORD_MATCHES,
     )
 except ImportError:
     OPEN_METEO_API_URL = os.environ.get("OPEN_METEO_API_URL", "https://api.open-meteo.com/v1/forecast").strip('"').strip("'")
@@ -43,6 +45,18 @@ except ImportError:
     DEFAULT_DRIVE_SPEED_KMH = float(os.environ.get("DEFAULT_DRIVE_SPEED_KMH", "45.0").strip('"').strip("'"))
     DEFAULT_TRAFFIC_BUFFER_MINUTES = int(os.environ.get("DEFAULT_TRAFFIC_BUFFER_MINUTES", "10").strip('"').strip("'"))
     DEFAULT_ARRIVAL_BUFFER_MINUTES = int(os.environ.get("DEFAULT_ARRIVAL_BUFFER_MINUTES", "30").strip('"').strip("'"))
+    WEATHER_RAIN_THRESHOLD_PERCENT = float(os.environ.get("WEATHER_RAIN_THRESHOLD_PERCENT", "40.0").strip('"').strip("'"))
+    BUFFER_KEYWORD_MATCHES = ["buffer"]
+
+def resolve_arrival_buffer_minutes(explicit_buffer: Optional[int] = None) -> int:
+    """Dynamically finds the arrival buffer from preferences or defaults."""
+    if explicit_buffer is not None:
+        return explicit_buffer
+    prefs = get_all_preferences()
+    for key, val in prefs.items():
+        if any(b in key.lower() for b in BUFFER_KEYWORD_MATCHES) and isinstance(val, (int, float)):
+            return int(val)
+    return DEFAULT_ARRIVAL_BUFFER_MINUTES
 
 
 # ============================================================================
@@ -78,10 +92,7 @@ def check_conflicts(
     if events is None:
         events = get_all_events()
 
-    if buffer_minutes is None:
-        buffer_minutes = int(
-            get_preference("arrival_buffer_minutes", DEFAULT_ARRIVAL_BUFFER_MINUTES)
-        )
+    buffer_minutes = resolve_arrival_buffer_minutes(buffer_minutes)
 
     conflicts: List[ConflictReport] = []
     sorted_events = sorted(events, key=lambda e: e.start_time)
@@ -154,10 +165,7 @@ def estimate_travel(
         int((distance_km / DEFAULT_DRIVE_SPEED_KMH) * 60) + DEFAULT_TRAFFIC_BUFFER_MINUTES
     )
 
-    if buffer_minutes is None:
-        buffer_minutes = int(
-            get_preference("arrival_buffer_minutes", DEFAULT_ARRIVAL_BUFFER_MINUTES)
-        )
+    buffer_minutes = resolve_arrival_buffer_minutes(buffer_minutes)
 
     arrival_dt = datetime.fromisoformat(target_arrival_time)
     leave_dt = arrival_dt - timedelta(minutes=(drive_minutes + buffer_minutes))
@@ -208,8 +216,8 @@ async def get_forecast(
                     temp_max = daily.get("temperature_2m_max", [20.0])[idx]
                     code = daily.get("weather_code", [0])[idx]
 
-                    # WMO codes >= 51 indicate drizzle / rain
-                    is_rain = code >= 51 or precip_pct >= 40
+                    # WMO codes >= 51 indicate drizzle / rain, or threshold from .env
+                    is_rain = code >= 51 or precip_pct >= WEATHER_RAIN_THRESHOLD_PERCENT
                     condition = "Rain / Showers" if is_rain else "Partly Cloudy"
 
                     return WeatherForecast(
