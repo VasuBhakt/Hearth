@@ -16,7 +16,11 @@ from tools import (
     estimate_travel as calc_travel,
     get_forecast as fetch_forecast,
 )
-from models import ConflictReport, TravelEstimate, WeatherForecast
+from planner import (
+    propose_plan as generate_plan,
+    revise_plan as update_plan,
+)
+from models import ConflictReport, TravelEstimate, WeatherForecast, PlanCard
 
 # Initialize Hearth MCP Server
 mcp = MCPServer(
@@ -78,18 +82,33 @@ async def get_forecast(
     )
     return forecast.model_dump()
 
+@mcp.tool(name="propose_plan", description="Generates a draft PlanCard addressing conflicts, weather, travel, and packing")
+async def propose_plan(request: str = "Get us ready for Saturday's tournament") -> Dict[str, Any]:
+    """Builds a draft plan for preview without modifying calendar events."""
+    plan = await generate_plan(request=request)
+    return plan.model_dump()
+
+@mcp.tool(name="revise_plan", description="Applies a spoken or typed adjustment to an existing draft PlanCard")
+async def revise_plan(plan_id: str, instruction: str) -> Dict[str, Any]:
+    """Applies adjustments to a draft plan card before approval."""
+    updated = await update_plan(plan_id=plan_id, instruction=instruction)
+    return updated.model_dump()
+
 # Expose Starlette / ASGI app using Streamable HTTP
 def create_app() -> Starlette:
     return mcp.streamable_http_app()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    host = os.environ.get("HOST", "127.0.0.1")
-    print(f"Starting Hearth MCP Server on port {port}...")
+    try:
+        from config import PORT, HOST
+    except ImportError:
+        PORT = int(os.environ.get("PORT", 8000))
+        HOST = os.environ.get("HOST", "127.0.0.1")
+    print(f"Starting Hearth MCP Server on {HOST}:{PORT}...")
     uvicorn.run(
         "mcp_server:create_app",
-        host=host,
-        port=port,
+        host=HOST,
+        port=PORT,
         factory=True,
         reload=True,
     )
