@@ -9,7 +9,7 @@ High-performance relational schema:
 import os
 from typing import Optional, List, Any
 from sqlite3 import Connection as SQLite3Connection
-from sqlalchemy import create_engine, String, Float, Boolean, JSON, ForeignKey, select, delete, event
+from sqlalchemy import create_engine, String, Float, Boolean, JSON, Integer, ForeignKey, select, delete, event
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, relationship
 
 from models import (
@@ -23,8 +23,12 @@ from models import (
     UndoEntry,
 )
 
-DB_PATH = os.environ.get("HEARTH_DB_PATH", "hearth.db").strip('"').strip("'")
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+try:
+    from config import HEARTH_DB_PATH
+except ImportError:
+    HEARTH_DB_PATH = os.environ.get("HEARTH_DB_PATH", "hearth.db").strip('"').strip("'")
+
+DATABASE_URL = f"sqlite:///{HEARTH_DB_PATH}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -61,6 +65,10 @@ class EventModel(Base):
     attendees: Mapped[list[str]] = mapped_column(JSON, default=list)
     description: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
+    # Event Priority & Required Gear
+    priority: Mapped[int] = mapped_column(Integer, default=1)
+    required_items: Mapped[list[str]] = mapped_column(JSON, default=list)
+
     def to_pydantic(self) -> Event:
         loc = None
         if self.location_name is not None:
@@ -77,6 +85,8 @@ class EventModel(Base):
             location=loc,
             attendees=self.attendees or [],
             description=self.description,
+            priority=self.priority,
+            required_items=self.required_items or [],
         )
 
     @classmethod
@@ -91,6 +101,8 @@ class EventModel(Base):
             longitude=event.location.longitude if event.location else None,
             attendees=event.attendees,
             description=event.description,
+            priority=event.priority,
+            required_items=event.required_items,
         )
 
 
@@ -272,8 +284,10 @@ class UndoEntryModel(Base):
 # Database Lifecycle & CRUD Helper Functions
 # ============================================================================
 
-def init_db() -> None:
-    """Create all SQLite tables if they do not exist."""
+def init_db(force: bool = False) -> None:
+    """Create all SQLite tables if they do not exist. If force=True, drop existing tables first."""
+    if force:
+        Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
 
 # --- Event CRUD ---
@@ -304,6 +318,8 @@ def save_event(event: Event) -> None:
             existing.longitude = new_data.longitude
             existing.attendees = new_data.attendees
             existing.description = new_data.description
+            existing.priority = new_data.priority
+            existing.required_items = new_data.required_items
         else:
             session.add(new_data)
         session.commit()

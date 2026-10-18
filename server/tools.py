@@ -24,28 +24,25 @@ from models import (
 )
 from db import get_all_events, get_all_preferences, get_preference
 
-# Environment-configurable endpoints & defaults (zero hardcoded URLs)
-OPEN_METEO_API_URL = os.environ.get(
-    "OPEN_METEO_API_URL", "https://api.open-meteo.com/v1/forecast"
-).strip('"').strip("'")
-OPEN_METEO_DAILY_METRICS = os.environ.get(
-    "OPEN_METEO_DAILY_METRICS",
-    "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
-).strip('"').strip("'")
-OPEN_METEO_TIMEZONE = os.environ.get("OPEN_METEO_TIMEZONE", "auto").strip('"').strip("'")
-OPEN_METEO_TIMEOUT_SECONDS = float(
-    os.environ.get("OPEN_METEO_TIMEOUT_SECONDS", "4.0").strip('"').strip("'")
-)
-
-DEFAULT_DRIVE_SPEED_KMH = float(
-    os.environ.get("DEFAULT_DRIVE_SPEED_KMH", "45.0").strip('"').strip("'")
-)
-DEFAULT_TRAFFIC_BUFFER_MINUTES = int(
-    os.environ.get("DEFAULT_TRAFFIC_BUFFER_MINUTES", "10").strip('"').strip("'")
-)
-DEFAULT_ARRIVAL_BUFFER_MINUTES = int(
-    os.environ.get("DEFAULT_ARRIVAL_BUFFER_MINUTES", "30").strip('"').strip("'")
-)
+# Import environment configurations and defaults
+try:
+    from config import (
+        OPEN_METEO_API_URL,
+        OPEN_METEO_DAILY_METRICS,
+        OPEN_METEO_TIMEZONE,
+        OPEN_METEO_TIMEOUT_SECONDS,
+        DEFAULT_DRIVE_SPEED_KMH,
+        DEFAULT_TRAFFIC_BUFFER_MINUTES,
+        DEFAULT_ARRIVAL_BUFFER_MINUTES,
+    )
+except ImportError:
+    OPEN_METEO_API_URL = os.environ.get("OPEN_METEO_API_URL", "https://api.open-meteo.com/v1/forecast").strip('"').strip("'")
+    OPEN_METEO_DAILY_METRICS = os.environ.get("OPEN_METEO_DAILY_METRICS", "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code").strip('"').strip("'")
+    OPEN_METEO_TIMEZONE = os.environ.get("OPEN_METEO_TIMEZONE", "auto").strip('"').strip("'")
+    OPEN_METEO_TIMEOUT_SECONDS = float(os.environ.get("OPEN_METEO_TIMEOUT_SECONDS", "4.0").strip('"').strip("'"))
+    DEFAULT_DRIVE_SPEED_KMH = float(os.environ.get("DEFAULT_DRIVE_SPEED_KMH", "45.0").strip('"').strip("'"))
+    DEFAULT_TRAFFIC_BUFFER_MINUTES = int(os.environ.get("DEFAULT_TRAFFIC_BUFFER_MINUTES", "10").strip('"').strip("'"))
+    DEFAULT_ARRIVAL_BUFFER_MINUTES = int(os.environ.get("DEFAULT_ARRIVAL_BUFFER_MINUTES", "30").strip('"').strip("'"))
 
 
 # ============================================================================

@@ -48,6 +48,8 @@ class Event(BaseModel):
     location: Optional[Location] = Field(None, description = "Event location")
     attendees: List[str] = Field(default_factory=list, description="List of attendees")
     description: Optional[str] = Field(None, description="Additional details or notes")
+    priority: int = Field(default=1, description="1=Flexible/Routine, 2=Important, 3=Fixed/High")
+    required_items: List[str] = Field(default_factory=list, description="Items specifically needed for this event")
 
 class Preference(BaseModel):
     key: str = Field(..., description="Preference setting key") # acts as id
