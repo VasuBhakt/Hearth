@@ -16,7 +16,6 @@ from tools import (
     estimate_travel as calc_travel,
     get_forecast as fetch_forecast,
     remember_preference as save_preference,
-    simulate_checkout as mock_checkout,
 )
 from planner import (
     propose_plan as generate_plan,
@@ -120,10 +119,6 @@ async def remember_preference(key: str, value: Any) -> Dict[str, Any]:
     """Persist a preference setting for cross-session memory ('same as last time')."""
     return save_preference(key=key, value=value)
 
-@mcp.tool(name="simulate_checkout", description="Simulates creating a mock provisioning order from a packing or shopping list (zero payment processing)")
-async def simulate_checkout(items: List[str], delivery_address: Optional[str] = None) -> Dict[str, Any]:
-    """Simulates ordering supplies from a packing list without taking payment info."""
-    return mock_checkout(items=items, delivery_address=delivery_address)
 
 
 

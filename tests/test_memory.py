@@ -1,13 +1,12 @@
 """
-Unit tests for Hearth's Memory & Provisioning Tools:
+Unit tests for Hearth's Memory Tool:
 - remember_preference (cross-session memory 'same as last time')
-- simulate_checkout (mock grocery/supply order staging behind safety boundary)
 - End-to-end integration: saving preferences alters subsequent plan cards
 """
 import pytest
 from server.seed import seed_demo_data
 from server.db import get_preference
-from server.tools import remember_preference, simulate_checkout
+from server.tools import remember_preference
 from server.planner import propose_plan
 
 
@@ -73,37 +72,3 @@ async def test_cross_session_memory_in_planning():
     # 3. Verify packing list dynamically picked up the cross-session preferences
     assert any("electrolyte" in item.lower() for item in plan.packing_list)
     assert any("fig newtons" in item.lower() for item in plan.packing_list)
-
-
-# ============================================================================
-# 3. simulate_checkout Tests
-# ============================================================================
-
-def test_simulate_checkout_creates_mock_order():
-    """
-    Verifies that simulate_checkout creates a staged mock order without payment processing.
-    """
-    items = ["Orange slices", "Electrolyte drinks", "Ice pack", "Sunscreen"]
-    result = simulate_checkout(items=items, delivery_address="123 Oak Street")
-
-    assert result["success"] is True
-    assert "order_id" in result
-    assert result["items"] == items
-    assert result["item_count"] == 4
-    assert result["delivery_destination"] == "123 Oak Street"
-    assert result["status"] == "order_staged"
-    assert "No payment" in result["message"] or "Zero payment" in result["message"]
-
-
-def test_simulate_checkout_uses_default_home_address():
-    """If no address is provided, falls back to .env configured home."""
-    result = simulate_checkout(items=["Soccer shin guards"])
-    assert result["success"] is True
-    assert result["delivery_destination"] is not None
-    assert result["item_count"] == 1
-
-
-def test_simulate_checkout_empty_items_rejected():
-    """Cannot checkout empty shopping list."""
-    with pytest.raises(ValueError, match="empty list"):
-        simulate_checkout(items=[])
