@@ -145,3 +145,8 @@ MAX_SLOT_SEARCH_DAYS = parse_env_int(os.environ.get("MAX_SLOT_SEARCH_DAYS"), 14)
 DEFAULT_SLOT_SEARCH_HOUR = parse_env_int(os.environ.get("DEFAULT_SLOT_SEARCH_HOUR"), 10)
 WEEKDAY_WORKDAY_MAX = parse_env_int(os.environ.get("WEEKDAY_WORKDAY_MAX"), 5)
 
+# ============================================================================
+# 6. Checkout & Order Simulation Defaults (Configurable via .env)
+# ============================================================================
+DEFAULT_DELIVERY_WINDOW_HOURS = parse_env_int(os.environ.get("DEFAULT_DELIVERY_WINDOW_HOURS"), 2)
+

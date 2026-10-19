@@ -22,7 +22,7 @@ from models import (
     TravelEstimate,
     WeatherForecast,
 )
-from db import get_all_events, get_all_preferences, get_preference
+from db import get_all_events, get_all_preferences, get_preference, set_preference
 
 # Import environment configurations and defaults
 try:
@@ -36,6 +36,8 @@ try:
         DEFAULT_ARRIVAL_BUFFER_MINUTES,
         WEATHER_RAIN_THRESHOLD_PERCENT,
         BUFFER_KEYWORD_MATCHES,
+        DEFAULT_HOME_NAME,
+        DEFAULT_DELIVERY_WINDOW_HOURS,
     )
 except ImportError:
     OPEN_METEO_API_URL = os.environ.get("OPEN_METEO_API_URL", "https://api.open-meteo.com/v1/forecast").strip('"').strip("'")
@@ -47,6 +49,9 @@ except ImportError:
     DEFAULT_ARRIVAL_BUFFER_MINUTES = int(os.environ.get("DEFAULT_ARRIVAL_BUFFER_MINUTES", "30").strip('"').strip("'"))
     WEATHER_RAIN_THRESHOLD_PERCENT = float(os.environ.get("WEATHER_RAIN_THRESHOLD_PERCENT", "40.0").strip('"').strip("'"))
     BUFFER_KEYWORD_MATCHES = ["buffer"]
+    DEFAULT_HOME_NAME = "Home"
+    DEFAULT_DELIVERY_WINDOW_HOURS = 2
+
 
 def resolve_arrival_buffer_minutes(explicit_buffer: Optional[int] = None) -> int:
     """Dynamically finds the arrival buffer from preferences or defaults."""
@@ -242,3 +247,55 @@ async def get_forecast(
         wind_speed_kph=22.0,
         rain_warning=True,
     )
+
+
+# ============================================================================
+# 5. remember_preference (Cross-Session Family Preference Memory)
+# ============================================================================
+
+def remember_preference(key: str, value: Any) -> Dict[str, Any]:
+    """
+    Saves or updates a family preference setting in SQLite for cross-session recall.
+    Supports snacks, arrival buffers, packing lists, favorite venues, etc.
+    Enables 'same as last time' user journey.
+    """
+    if not key or not str(key).strip():
+        raise ValueError("Preference key cannot be empty.")
+
+    clean_key = str(key).strip().lower().replace(" ", "_")
+    set_preference(clean_key, value)
+
+    return {
+        "success": True,
+        "key": clean_key,
+        "value": value,
+        "message": f"Successfully remembered preference '{clean_key}'.",
+    }
+
+
+# ============================================================================
+# 6. simulate_checkout (Mock Shopping / Provisioning Order)
+# ============================================================================
+
+def simulate_checkout(items: List[str], delivery_address: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Simulates turning a packing or grocery list into a mock provisioning order.
+    Safety guarantee: Never accepts payment credentials. Mock order simulation only.
+    """
+    if not items:
+        raise ValueError("Cannot checkout an empty list of items.")
+
+    delivery_window = timedelta(hours=DEFAULT_DELIVERY_WINDOW_HOURS)
+    delivery_time_str = (datetime.now() + delivery_window).strftime("%I:%M %p")
+    order_id = f"ord_{int(datetime.now().timestamp())}"
+
+    return {
+        "success": True,
+        "order_id": order_id,
+        "items": items,
+        "item_count": len(items),
+        "delivery_destination": delivery_address or DEFAULT_HOME_NAME,
+        "estimated_delivery_time": delivery_time_str,
+        "status": "order_staged",
+        "message": f"Mock order '{order_id}' staged for {len(items)} items to {delivery_address or DEFAULT_HOME_NAME}. Zero payment data processed.",
+    }
