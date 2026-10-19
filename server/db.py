@@ -141,6 +141,7 @@ class PlanCardModel(Base):
     conflicts: Mapped[list[dict]] = mapped_column(JSON, default=list)
     packing_list: Mapped[list[str]] = mapped_column(JSON, default=list)
     proposed_changes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    action_items: Mapped[list[dict]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String, default="draft")
 
     # Relationships
@@ -180,6 +181,7 @@ class PlanCardModel(Base):
             weather=weather_obj,
             packing_list=self.packing_list or [],
             proposed_changes=self.proposed_changes or [],
+            action_items=self.action_items or [],
             status=self.status,
         )
 
@@ -201,6 +203,7 @@ class PlanCardModel(Base):
             conflicts=[c.model_dump() for c in plan.conflicts],
             packing_list=plan.packing_list,
             proposed_changes=plan.proposed_changes,
+            action_items=plan.action_items,
             status=plan.status,
         )
 
@@ -391,6 +394,7 @@ def save_plan(plan: PlanCard) -> None:
             existing.conflicts = new_data.conflicts
             existing.packing_list = new_data.packing_list
             existing.proposed_changes = new_data.proposed_changes
+            existing.action_items = new_data.action_items
             existing.status = new_data.status
         else:
             session.add(new_data)
@@ -454,10 +458,25 @@ def verify_and_consume_token(plan_id: str, token: str) -> bool:
 # --- Undo Ledger CRUD ---
 
 def save_undo_entry(entry: UndoEntry) -> None:
-    """Append an action to the undo ledger."""
+    """Append an action to the undo ledger and prune oldest entries beyond configured limit."""
+    try:
+        from config import UNDO_LEDGER_MAX_ENTRIES
+    except ImportError:
+        UNDO_LEDGER_MAX_ENTRIES = 50
+
     with SessionLocal() as session:
         session.add(UndoEntryModel.from_pydantic(entry))
         session.commit()
+
+        # Prune oldest entries if exceeding configured limit
+        all_entries = session.scalars(
+            select(UndoEntryModel).order_by(UndoEntryModel.timestamp.desc())
+        ).all()
+        if len(all_entries) > UNDO_LEDGER_MAX_ENTRIES:
+            for old in all_entries[UNDO_LEDGER_MAX_ENTRIES:]:
+                session.delete(old)
+            session.commit()
+
 
 def get_latest_undo_entry() -> Optional[UndoEntry]:
     """Retrieve the most recent undo entry."""
@@ -466,3 +485,24 @@ def get_latest_undo_entry() -> Optional[UndoEntry]:
             select(UndoEntryModel).order_by(UndoEntryModel.timestamp.desc()).limit(1)
         ).first()
         return model.to_pydantic() if model else None
+
+def get_undo_entry_by_plan(plan_id: str) -> Optional[UndoEntry]:
+    """Retrieve the most recent undo entry for a specific plan."""
+    with SessionLocal() as session:
+        model = session.scalars(
+            select(UndoEntryModel)
+            .where(UndoEntryModel.plan_id == plan_id)
+            .order_by(UndoEntryModel.timestamp.desc())
+            .limit(1)
+        ).first()
+        return model.to_pydantic() if model else None
+
+def delete_undo_entry(entry_id: str) -> bool:
+    """Delete an undo entry after it has been consumed."""
+    with SessionLocal() as session:
+        entry = session.get(UndoEntryModel, entry_id)
+        if entry:
+            session.delete(entry)
+            session.commit()
+            return True
+        return False

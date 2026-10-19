@@ -130,3 +130,18 @@ HOT_WEATHER_KEYWORDS = parse_env_list(
     os.environ.get("HOT_WEATHER_KEYWORDS"),
     ["hot", "sunny", "heat"],
 )
+
+# ============================================================================
+# 5. Security, Approval Gate & Undo Defaults (Configurable via .env)
+# ============================================================================
+APPROVAL_TOKEN_TTL_MINUTES = parse_env_int(os.environ.get("APPROVAL_TOKEN_TTL_MINUTES"), 15)
+APPROVAL_TOKEN_LENGTH_BYTES = parse_env_int(os.environ.get("APPROVAL_TOKEN_LENGTH_BYTES"), 32)
+UNDO_LEDGER_MAX_ENTRIES = parse_env_int(os.environ.get("UNDO_LEDGER_MAX_ENTRIES"), 50)
+DEFAULT_PLAN_STATUS_DRAFT = parse_env_str(os.environ.get("DEFAULT_PLAN_STATUS_DRAFT"), "draft")
+DEFAULT_PLAN_STATUS_COMMITTED = parse_env_str(os.environ.get("DEFAULT_PLAN_STATUS_COMMITTED"), "committed")
+ACTION_TYPE_COMMIT_PLAN = parse_env_str(os.environ.get("ACTION_TYPE_COMMIT_PLAN"), "commit_plan")
+ACTION_TYPE_RESCHEDULE = parse_env_str(os.environ.get("ACTION_TYPE_RESCHEDULE"), "reschedule_event")
+MAX_SLOT_SEARCH_DAYS = parse_env_int(os.environ.get("MAX_SLOT_SEARCH_DAYS"), 14)
+DEFAULT_SLOT_SEARCH_HOUR = parse_env_int(os.environ.get("DEFAULT_SLOT_SEARCH_HOUR"), 10)
+WEEKDAY_WORKDAY_MAX = parse_env_int(os.environ.get("WEEKDAY_WORKDAY_MAX"), 5)
+

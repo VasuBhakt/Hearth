@@ -64,6 +64,7 @@ class PlanCard(BaseModel):
     weather: Optional[WeatherForecast] = Field(None, description="Weather forecast for the venue")
     packing_list: List[str] = Field(default_factory=list, description="Items to pack or buy")
     proposed_changes: List[str] = Field(default_factory=list, description="Human-readable summary of proposed actions")
+    action_items: List[dict] = Field(default_factory=list, description="Structured actions to execute upon approval")
     status: str = Field(default="draft", description="'draft', 'approved', or 'committed'")
 
 class ApprovalToken(BaseModel):
