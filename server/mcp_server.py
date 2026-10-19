@@ -19,6 +19,9 @@ from tools import (
 from planner import (
     propose_plan as generate_plan,
     revise_plan as update_plan,
+    mint_approval_token as create_approval_token,
+    commit_plan as execute_plan,
+    undo_plan as rollback_plan,
 )
 from models import ConflictReport, TravelEstimate, WeatherForecast, PlanCard
 
@@ -93,6 +96,23 @@ async def revise_plan(plan_id: str, instruction: str) -> Dict[str, Any]:
     """Applies adjustments to a draft plan card before approval."""
     updated = await update_plan(plan_id=plan_id, instruction=instruction)
     return updated.model_dump()
+
+@mcp.tool(name="mint_approval_token", description="Simulates human UI approval by minting a single-use cryptographic token for a plan")
+async def mint_approval_token(plan_id: str) -> Dict[str, Any]:
+    """Generates an approval token representing human authorization."""
+    token = create_approval_token(plan_id=plan_id)
+    return token.model_dump()
+
+@mcp.tool(name="commit_plan", description="Applies plan action items to calendar events with human approval security gate")
+async def commit_plan(plan_id: str, approval_token: str) -> Dict[str, Any]:
+    """Applies approved plan changes to the database and snapshots state in undo ledger."""
+    return await execute_plan(plan_id=plan_id, approval_token=approval_token)
+
+@mcp.tool(name="undo_plan", description="Rolls back calendar events to pre-commit snapshot and restores plan to draft")
+async def undo_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
+    """Reverts calendar mutations from an approved plan."""
+    return await rollback_plan(plan_id=plan_id)
+
 
 # Expose Starlette / ASGI app using Streamable HTTP
 def create_app() -> Starlette:

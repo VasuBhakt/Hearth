@@ -12,7 +12,8 @@ import os
 import sys
 import re
 import string
-from datetime import datetime, timedelta
+import secrets
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 # Ensure local modules resolve cleanly
@@ -26,12 +27,23 @@ from models import (
     WeatherForecast,
     Event,
     Location,
+    ApprovalToken,
+    UndoEntry,
 )
 from db import (
     get_all_events,
     get_preference,
     save_plan,
     get_plan,
+    save_event,
+    get_event_by_id,
+    delete_event,
+    save_approval_token,
+    verify_and_consume_token,
+    save_undo_entry,
+    get_undo_entry_by_plan,
+    get_latest_undo_entry,
+    delete_undo_entry,
 )
 from tools import (
     check_conflicts,
@@ -65,6 +77,16 @@ try:
         RAIN_WEATHER_KEYWORDS,
         COLD_WEATHER_KEYWORDS,
         HOT_WEATHER_KEYWORDS,
+        APPROVAL_TOKEN_TTL_MINUTES,
+        APPROVAL_TOKEN_LENGTH_BYTES,
+        UNDO_LEDGER_MAX_ENTRIES,
+        DEFAULT_PLAN_STATUS_DRAFT,
+        DEFAULT_PLAN_STATUS_COMMITTED,
+        ACTION_TYPE_COMMIT_PLAN,
+        ACTION_TYPE_RESCHEDULE,
+        MAX_SLOT_SEARCH_DAYS,
+        DEFAULT_SLOT_SEARCH_HOUR,
+        WEEKDAY_WORKDAY_MAX,
     )
 except ImportError:
     DEFAULT_HOME_NAME = "Home"
@@ -84,6 +106,17 @@ except ImportError:
     RAIN_WEATHER_KEYWORDS = ["rain", "storm", "drizzle", "shower"]
     COLD_WEATHER_KEYWORDS = ["cold", "snow", "ice", "freeze", "chill"]
     HOT_WEATHER_KEYWORDS = ["hot", "sunny", "heat"]
+    APPROVAL_TOKEN_TTL_MINUTES = 15
+    APPROVAL_TOKEN_LENGTH_BYTES = 32
+    UNDO_LEDGER_MAX_ENTRIES = 50
+    DEFAULT_PLAN_STATUS_DRAFT = "draft"
+    DEFAULT_PLAN_STATUS_COMMITTED = "committed"
+    ACTION_TYPE_COMMIT_PLAN = "commit_plan"
+    ACTION_TYPE_RESCHEDULE = "reschedule_event"
+    MAX_SLOT_SEARCH_DAYS = 14
+    DEFAULT_SLOT_SEARCH_HOUR = 10
+    WEEKDAY_WORKDAY_MAX = 5
+
 
 # ============================================================================
 # Dynamic Preference Resolvers (Configurable via .env)
@@ -259,10 +292,12 @@ def find_next_available_slot(
     all_events: List[Event],
     reference_dt: datetime,
     preferences: Optional[Dict[str, Any]] = None,
+    target_weekday: Optional[int] = None,
 ) -> Tuple[datetime, datetime]:
     """
     Finds the next open calendar slot for an event that needs to be moved.
     Searches subsequent weekdays during standard family hours dynamically.
+    If target_weekday is provided (0=Mon ... 6=Sun), restricts to that weekday.
     Zero hardcoded dates.
     """
     duration = datetime.fromisoformat(event_to_reschedule.end_time) - datetime.fromisoformat(event_to_reschedule.start_time)
@@ -272,10 +307,13 @@ def find_next_available_slot(
     current_search_day = reference_dt.date() + timedelta(days=1)
     candidate_hours = get_daily_scheduling_hours(preferences or {})
 
-    for day_offset in range(7):  # Search up to 7 days ahead
+    for day_offset in range(MAX_SLOT_SEARCH_DAYS):  # Configurable search window from .env
         test_date = current_search_day + timedelta(days=day_offset)
-        # Skip weekends for appointments/errands
-        if test_date.weekday() >= 5:
+        if target_weekday is not None:
+            if test_date.weekday() != target_weekday:
+                continue
+        elif test_date.weekday() >= WEEKDAY_WORKDAY_MAX:
+            # Skip weekends for appointments/errands unless specifically targeted
             continue
 
         for hour in candidate_hours:
@@ -297,8 +335,8 @@ def find_next_available_slot(
             if not has_conflict:
                 return slot_start, slot_end
 
-    # Fallback to next morning
-    fallback_start = datetime(current_search_day.year, current_search_day.month, current_search_day.day, 10, 0, 0)
+    # Fallback to next morning using configured search hour
+    fallback_start = datetime(current_search_day.year, current_search_day.month, current_search_day.day, DEFAULT_SLOT_SEARCH_HOUR, 0, 0)
     return fallback_start, fallback_start + duration
 
 
@@ -374,6 +412,7 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
 
     # 5. Dynamic Conflict Resolution using Priority Comparison
     proposed_changes: List[str] = []
+    action_items: List[dict] = []
 
     for conf in relevant_conflicts:
         other_id = conf.event2_id if conf.event1_id == target_event.id else conf.event1_id
@@ -382,15 +421,29 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
         if other_event:
             # Compare priorities: Lower priority event yields
             if other_event.priority <= target_event.priority:
-                new_start, _ = find_next_available_slot(other_event, events, target_dt, preferences)
+                new_start, new_end = find_next_available_slot(other_event, events, target_dt, preferences)
                 proposed_changes.append(
                     f"Reschedule '{other_event.title}' to {new_start.strftime('%A, %b %d at %I:%M %p')} to resolve overlap with '{target_event.title}'."
                 )
+                action_items.append({
+                    "action": ACTION_TYPE_RESCHEDULE,
+                    "event_id": other_event.id,
+                    "event_title": other_event.title,
+                    "new_start_time": new_start.isoformat(),
+                    "new_end_time": new_end.isoformat(),
+                })
             else:
-                new_start, _ = find_next_available_slot(target_event, events, target_dt, preferences)
+                new_start, new_end = find_next_available_slot(target_event, events, target_dt, preferences)
                 proposed_changes.append(
                     f"Shift '{target_event.title}' to {new_start.strftime('%A, %b %d at %I:%M %p')} to respect higher-priority '{other_event.title}'."
                 )
+                action_items.append({
+                    "action": ACTION_TYPE_RESCHEDULE,
+                    "event_id": target_event.id,
+                    "event_title": target_event.title,
+                    "new_start_time": new_start.isoformat(),
+                    "new_end_time": new_end.isoformat(),
+                })
 
     # Departure scheduling proposal
     leave_time_str = travel_estimate.recommended_leave_by[11:16]
@@ -409,7 +462,8 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
         weather=weather,
         packing_list=list(dict.fromkeys(packing_list)),  # Deduplicate while preserving order
         proposed_changes=proposed_changes,
-        status="draft",
+        action_items=action_items,
+        status=DEFAULT_PLAN_STATUS_DRAFT,
     )
 
     save_plan(plan_card)
@@ -433,7 +487,7 @@ async def revise_plan(plan_id: str, instruction: str) -> PlanCard:
     if not plan:
         raise ValueError(f"Plan with id '{plan_id}' does not exist.")
 
-    if plan.status == "committed":
+    if plan.status == DEFAULT_PLAN_STATUS_COMMITTED:
         raise ValueError(f"Plan '{plan_id}' has already been committed and cannot be revised.")
 
     # 1. Generic Item Addition Pattern
@@ -466,6 +520,39 @@ async def revise_plan(plan_id: str, instruction: str) -> PlanCard:
         events = get_all_events()
         matched_event = find_target_event(target_term, events)
         target_display = matched_event.title if matched_event else target_term.title()
+
+        # Detect target weekday dynamically from dest_term
+        target_weekday = None
+        for idx, wname in enumerate(WEEKDAY_NAMES):
+            if wname in dest_term.lower():
+                target_weekday = idx
+                break
+
+        if matched_event:
+            try:
+                ref_dt = datetime.fromisoformat(plan.target_date)
+            except ValueError:
+                ref_dt = datetime.now()
+
+            new_start, new_end = find_next_available_slot(
+                matched_event, events, ref_dt, preferences=None, target_weekday=target_weekday
+            )
+            # Update or append to plan.action_items
+            action_updated = False
+            for act in plan.action_items:
+                if act.get("event_id") == matched_event.id:
+                    act["new_start_time"] = new_start.isoformat()
+                    act["new_end_time"] = new_end.isoformat()
+                    action_updated = True
+                    break
+            if not action_updated:
+                plan.action_items.append({
+                    "action": ACTION_TYPE_RESCHEDULE,
+                    "event_id": matched_event.id,
+                    "event_title": matched_event.title,
+                    "new_start_time": new_start.isoformat(),
+                    "new_end_time": new_end.isoformat(),
+                })
 
         updated_changes = []
         applied = False
@@ -503,3 +590,159 @@ async def revise_plan(plan_id: str, instruction: str) -> PlanCard:
 
     save_plan(plan)
     return plan
+
+
+# ============================================================================
+# Security Gate, Commit, and Undo Implementation
+# ============================================================================
+
+def mint_approval_token(plan_id: str, ttl_minutes: Optional[int] = None) -> ApprovalToken:
+    """
+    Mints a single-use cryptographic approval token for a specific plan.
+    Simulates the Plan Card UI's 'Approve' button.
+    Token validity duration is configured via .env (APPROVAL_TOKEN_TTL_MINUTES).
+    """
+    plan = get_plan(plan_id)
+    if not plan:
+        raise ValueError(f"Plan with id '{plan_id}' does not exist.")
+
+    ttl = ttl_minutes if ttl_minutes is not None else APPROVAL_TOKEN_TTL_MINUTES
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=ttl)
+    token_str = secrets.token_urlsafe(APPROVAL_TOKEN_LENGTH_BYTES)
+
+    token = ApprovalToken(
+        plan_id=plan_id,
+        token=token_str,
+        approved_at=now.isoformat(),
+        expires_at=expires_at.isoformat(),
+    )
+    save_approval_token(token)
+    return token
+
+
+async def commit_plan(plan_id: str, approval_token: str) -> Dict[str, Any]:
+    """
+    Executes a draft PlanCard by applying its action items to calendar events.
+    Security Gate:
+    - Requires a valid, unexpired approval token.
+    - Burns the token immediately upon verification (single-use guarantee).
+    - Captures an exact snapshot of current calendar events in undo_ledger before any mutation.
+    """
+    if not approval_token or not approval_token.strip():
+        raise ValueError("Commit rejected: Missing approval token.")
+
+    plan = get_plan(plan_id)
+    if not plan:
+        raise ValueError(f"Plan with id '{plan_id}' does not exist.")
+
+    if plan.status == DEFAULT_PLAN_STATUS_COMMITTED:
+        raise ValueError(f"Plan '{plan_id}' has already been committed.")
+
+    # 1. Verify and consume approval token (burns token)
+    is_valid = verify_and_consume_token(plan_id, approval_token.strip())
+    if not is_valid:
+        raise ValueError(f"Commit rejected: Invalid or expired approval token for plan '{plan_id}'.")
+
+    # 2. Snapshot affected calendar events into undo_ledger (Targeted Event Delta)
+    target_event_ids = {
+        action["event_id"]
+        for action in plan.action_items
+        if isinstance(action, dict) and "event_id" in action
+    }
+    affected_events = [get_event_by_id(eid) for eid in target_event_ids]
+    snapshot = [ev.model_dump() for ev in affected_events if ev is not None]
+
+    undo_id = f"undo_{plan_id}_{int(datetime.now(timezone.utc).timestamp())}"
+    undo_entry = UndoEntry(
+        id=undo_id,
+        plan_id=plan_id,
+        action_type=ACTION_TYPE_COMMIT_PLAN,
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        snapshot_data={
+            "events": snapshot,
+            "plan_id": plan_id,
+            "plan_status": plan.status,
+        },
+    )
+    save_undo_entry(undo_entry)
+
+    # 3. Apply mutations to calendar events based on action_items
+    executed_actions = 0
+    for action in plan.action_items:
+        act_type = action.get("action")
+        if act_type == ACTION_TYPE_RESCHEDULE:
+            event_id = action.get("event_id")
+            event_obj = get_event_by_id(event_id)
+            if event_obj:
+                if "new_start_time" in action:
+                    event_obj.start_time = action["new_start_time"]
+                if "new_end_time" in action:
+                    event_obj.end_time = action["new_end_time"]
+                save_event(event_obj)
+                executed_actions += 1
+
+    # 4. Update plan status to 'committed'
+    plan.status = DEFAULT_PLAN_STATUS_COMMITTED
+    save_plan(plan)
+
+    return {
+        "success": True,
+        "plan_id": plan_id,
+        "status": plan.status,
+        "committed_at": undo_entry.timestamp,
+        "actions_executed": executed_actions,
+        "undo_available": True,
+        "message": f"Plan '{plan.title}' committed successfully. {executed_actions} event(s) updated.",
+    }
+
+
+async def undo_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Rolls back calendar events to the snapshot captured prior to commit.
+    Restores the plan's status back to 'draft'.
+    Cleans up the consumed undo entry.
+    """
+    if plan_id:
+        undo_entry = get_undo_entry_by_plan(plan_id)
+        if not undo_entry:
+            raise ValueError(f"No undo record found for plan '{plan_id}'.")
+    else:
+        undo_entry = get_latest_undo_entry()
+        if not undo_entry:
+            raise ValueError("No undo records available in ledger.")
+
+    snapshot = undo_entry.snapshot_data
+    if isinstance(snapshot, dict) and "events" in snapshot:
+        raw_events = snapshot["events"]
+        target_plan_id = snapshot.get("plan_id", undo_entry.plan_id)
+        saved_plan_status = snapshot.get("plan_status", DEFAULT_PLAN_STATUS_DRAFT)
+    elif isinstance(snapshot, list):
+        raw_events = snapshot
+        target_plan_id = undo_entry.plan_id
+        saved_plan_status = DEFAULT_PLAN_STATUS_DRAFT
+    else:
+        raise ValueError("Invalid snapshot data in undo record.")
+
+    # 1. Restore ONLY the affected calendar events from the targeted snapshot
+    for ev_dict in raw_events:
+        if isinstance(ev_dict, dict):
+            save_event(Event(**ev_dict))
+
+    # 2. Revert plan status to draft
+    plan = get_plan(target_plan_id)
+    if plan:
+        plan.status = saved_plan_status
+        save_plan(plan)
+
+    # 3. Clean up the consumed undo entry
+    delete_undo_entry(undo_entry.id)
+
+    return {
+        "success": True,
+        "plan_id": target_plan_id,
+        "status": saved_plan_status,
+        "restored_events_count": len(raw_events),
+        "message": f"Undo successful. Restored calendar to state prior to plan '{target_plan_id}'.",
+    }
+
