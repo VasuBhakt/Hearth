@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hearth — Family Assistant MCP Simulator</title>
+  <meta name="description" content="Self-hosted, privacy-first family assistant MCP server and interactive simulator featuring Streamable HTTP protocol, autonomous conflict resolution, and cryptographic approval gate." />
+
+  <!-- Google Fonts: Editorial Plus Jakarta Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <!-- Modular Design System Styles -->
+  <link rel="stylesheet" href="/static/css/tokens.css" />
+  <link rel="stylesheet" href="/static/css/base.css" />
+  <link rel="stylesheet" href="/static/css/components/header.css" />
+  <link rel="stylesheet" href="/static/css/components/chat.css" />
+  <link rel="stylesheet" href="/static/css/components/plan_card.css" />
+  <link rel="stylesheet" href="/static/css/components/telemetry.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Executive Brand & Protocol Status Header -->
+    <header class="app-header">
+      <div class="brand-wrapper">
+        <div class="brand-icon">🔥</div>
+        <div>
+          <h1 class="brand-title" id="header-title">Hearth</h1>
+        </div>
+        <span class="brand-badge">Assistant Simulator</span>
+      </div>
+
+      <div class="protocol-pill" id="protocol-badge">
+        <span class="pulse-dot"></span>
+        <span>MCP Streamable HTTP</span>
+      </div>
+
+      <div class="header-actions">
+        <button class="btn-scenario primary" id="btn-scenario-saturday" title="Trigger tournament demo scenario">
+          <span>⚡</span>
+          <span>Saturday Tournament Demo</span>
+        </button>
+        <button class="btn-scenario" id="btn-reset-db" title="Restore scenario SQLite state">
+          <span>🔄</span>
+          <span>Reset Scenario DB</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Split: Conversation Stage + Live MCP Telemetry HUD -->
+    <main class="main-stage-wrapper">
+      <!-- Left Column: Conversational Briefing & Action Stage -->
+      <section class="chat-stage-container" aria-label="Conversation and Planning Area">
+        <div class="chat-feed" id="chat-feed">
+          <!-- Dynamic conversation messages and interactive plan cards rendered here -->
+        </div>
+
+        <!-- Real-time Sine Waveform Visualizer (Active during voice recognition) -->
+        <div class="audio-visualizer-container" id="audio-visualizer-container">
+          <canvas id="audio-waveform-canvas"></canvas>
+        </div>
+
+        <!-- Floating Glassmorphic Input Bar -->
+        <div class="chat-input-bar">
+          <div class="input-capsule">
+            <input
+              type="text"
+              id="chat-input"
+              placeholder="Give a family instruction (e.g. 'Get us ready for Saturday's tournament')..."
+              autocomplete="off"
+            />
+            <button class="btn-mic" id="btn-mic" title="Speak command">🎤</button>
+            <button class="btn-send" id="btn-send" title="Send message">➔</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Live Streamable HTTP MCP Telemetry HUD -->
+      <aside class="telemetry-hud-container" aria-label="MCP Protocol Telemetry Inspector">
+        <div class="telemetry-header">
+          <div class="hud-title-group">
+            <span class="stream-pulse-dot"></span>
+            <h2 class="hud-title">Streamable MCP Telemetry</h2>
+          </div>
+          <div class="telemetry-meta-right">
+            <span class="hud-count-pill" id="telemetry-count-pill">0 calls</span>
+            <button class="btn-hud-clear" id="btn-clear-telemetry" title="Clear event feed">Clear</button>
+          </div>
+        </div>
+
+        <div class="telemetry-feed" id="telemetry-feed">
+          <!-- Live tool calls, latencies, and expandable JSON payloads streamed here -->
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Main ES Module Application Script -->
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
