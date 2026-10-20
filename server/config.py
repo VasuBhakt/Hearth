@@ -145,4 +145,18 @@ MAX_SLOT_SEARCH_DAYS = parse_env_int(os.environ.get("MAX_SLOT_SEARCH_DAYS"), 14)
 DEFAULT_SLOT_SEARCH_HOUR = parse_env_int(os.environ.get("DEFAULT_SLOT_SEARCH_HOUR"), 10)
 WEEKDAY_WORKDAY_MAX = parse_env_int(os.environ.get("WEEKDAY_WORKDAY_MAX"), 5)
 
+# ============================================================================
+# 6. Assistant Simulator Web UI Settings (Configurable via .env)
+# ============================================================================
+SIMULATOR_PORT = parse_env_int(os.environ.get("SIMULATOR_PORT"), 8080)
+SIMULATOR_HOST = parse_env_str(os.environ.get("SIMULATOR_HOST"), "127.0.0.1")
+DEFAULT_DEMO_SCENARIO_PROMPT = parse_env_str(
+    os.environ.get("DEFAULT_DEMO_SCENARIO_PROMPT"),
+    "Get us ready for Saturday's tournament",
+)
+SIMULATOR_TITLE = parse_env_str(
+    os.environ.get("SIMULATOR_TITLE"),
+    "Hearth Family Assistant",
+)
+
 
