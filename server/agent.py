@@ -915,15 +915,30 @@ async def query_smart_fallback(
 
     # 6. Weather question
     if any(k in lower for k in WEATHER_KEYWORDS) and not is_planning:
-        target_loc = DEFAULT_VENUE_NAME
-        target_date = DEFAULT_TARGET_DATE
-        for ev in get_all_events():
-            loc_label = ev.location_name or (ev.location.name if ev.location else "")
-            if loc_label and loc_label.lower() in lower:
-                target_loc = loc_label
-                if ev.start_time:
-                    target_date = ev.start_time[:10]
-                break
+        target_loc = None
+        target_date = None
+
+        # Check for explicit city/location in prompt e.g. "weather in Kolkata", "forecast for New York"
+        loc_match = re.search(r'\b(?:in|for|at)\s+([a-zA-Z\s]+?)(?:\s+(?:on|today|tomorrow)|\?|\.|$)', user_msg, re.IGNORECASE)
+        if loc_match:
+            candidate_loc = loc_match.group(1).strip()
+            if candidate_loc.lower() not in ["the weekend", "today", "tomorrow", "this week", "saturday", "sunday"]:
+                target_loc = candidate_loc.title()
+
+        if not target_loc:
+            for ev in get_all_events():
+                loc_label = ev.location_name or (ev.location.name if ev.location else "")
+                if loc_label and loc_label.lower() in lower:
+                    target_loc = loc_label
+                    if ev.start_time:
+                        target_date = ev.start_time[:10]
+                    break
+
+        if not target_loc:
+            target_loc = DEFAULT_VENUE_NAME
+        if not target_date:
+            target_date = datetime.now().strftime("%Y-%m-%d")
+
         fc, _, _ = await execute_tool("get_forecast", {"location": target_loc, "date": target_date}, plan_id, on_telemetry)
         loc_display = fc.get("location") or fc.get("location_name", target_loc)
         time_display = fc.get("forecast_time") or fc.get("date", target_date)

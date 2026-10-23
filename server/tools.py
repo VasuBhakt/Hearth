@@ -306,6 +306,18 @@ async def get_forecast(
                     lat_found = ev.location.latitude
                     lng_found = ev.location.longitude
                     break
+        if lat_found is None and location_name and location_name.lower() not in ["home", "origin"]:
+            try:
+                geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+                async with httpx.AsyncClient(timeout=3.0) as geo_client:
+                    geo_resp = await geo_client.get(geo_url, params={"name": location_name, "count": 1})
+                    if geo_resp.status_code == 200:
+                        geo_results = geo_resp.json().get("results", [])
+                        if geo_results:
+                            lat_found = float(geo_results[0]["latitude"])
+                            lng_found = float(geo_results[0]["longitude"])
+            except Exception:
+                pass
         latitude = lat_found if lat_found is not None else DEFAULT_VENUE_LATITUDE
         longitude = lng_found if lng_found is not None else DEFAULT_VENUE_LONGITUDE
     else:
@@ -330,8 +342,14 @@ async def get_forecast(
                 daily = data.get("daily", {})
                 dates = daily.get("time", [])
 
+                idx = None
                 if date_str in dates:
                     idx = dates.index(date_str)
+                elif dates:
+                    idx = 0
+                    date_str = dates[0]
+
+                if idx is not None:
                     precip_pct = daily.get("precipitation_probability_max", [0])[idx]
                     temp_max = daily.get("temperature_2m_max", [20.0])[idx]
                     code = daily.get("weather_code", [0])[idx]
