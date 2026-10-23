@@ -257,3 +257,65 @@ async def test_get_forecast_offline_fallback_on_network_error(monkeypatch):
     assert fallback.location == "Riverdale Regional Sports Complex"
     assert fallback.rain_warning is True
     assert "Rain" in fallback.weather_condition
+
+
+# ============================================================================
+# 5. add_event dynamic insertion & immediate conflict detection tests
+# ============================================================================
+
+def test_add_event_normalizes_flexible_human_dates():
+    """
+    Verify add_event parses human natural dates like '24th october 2026, from 8:05 pm ist'
+    into clean ISO 8601 timestamps and persists into SQLite without errors.
+    """
+    from server.tools import add_event
+    res = add_event(
+        title="Codeforces Contest",
+        start_time="24th october 2026, from 8:05 pm ist",
+        location_name="Online",
+    )
+    assert res["success"] is True
+    assert res["event"]["title"] == "Codeforces Contest"
+    assert "2026-10-24T20:05:00" in res["event"]["start_time"]
+    assert res["has_conflicts"] is False
+
+    # Verify present in SQLite
+    from server.db import get_all_events
+    events = get_all_events()
+    created = next((e for e in events if e.title == "Codeforces Contest"), None)
+    assert created is not None
+    assert created.location.name == "Online"
+
+
+def test_add_event_detects_clashes_with_existing_schedule():
+    """
+    Verify add_event immediately flags conflicts when an added event
+    overlaps with an existing event on the household calendar.
+    """
+    from server.tools import add_event
+    # Saturday Oct 17 between 10:00 and 11:30 (overlaps with Soccer Tournament and Dentist)
+    res = add_event(
+        title="Piano Recital",
+        start_time="2026-10-17T10:00:00",
+        end_time="2026-10-17T11:30:00",
+        location_name="Community Center",
+    )
+    assert res["success"] is True
+    assert res["has_conflicts"] is True
+    assert len(res["conflicts"]) >= 1
+    clash_titles = [c["details"] for c in res["conflicts"]]
+    assert any("Dentist" in d or "Soccer" in d for d in clash_titles)
+
+
+def test_remove_event():
+    from tools import remove_event
+    from db import get_all_events
+
+    # Remove soccer tournament by keyword
+    res = remove_event(event_title="soccer tournament")
+    assert res["success"] is True
+    assert "Soccer" in res["deleted_event"]["title"]
+
+    # Verify it is no longer in all events
+    events = get_all_events()
+    assert not any("Soccer" in e.title for e in events)

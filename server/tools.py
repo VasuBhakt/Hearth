@@ -22,7 +22,14 @@ from models import (
     TravelEstimate,
     WeatherForecast,
 )
-from db import get_all_events, get_all_preferences, get_preference, set_preference
+from db import (
+    get_all_events,
+    get_all_preferences,
+    get_preference,
+    set_preference,
+    save_event,
+    delete_event,
+)
 
 # Import environment configurations and defaults
 try:
@@ -36,6 +43,21 @@ try:
         DEFAULT_ARRIVAL_BUFFER_MINUTES,
         WEATHER_RAIN_THRESHOLD_PERCENT,
         BUFFER_KEYWORD_MATCHES,
+        DEFAULT_HOME_NAME,
+        DEFAULT_HOME_LATITUDE,
+        DEFAULT_HOME_LONGITUDE,
+        DEFAULT_VENUE_NAME,
+        DEFAULT_VENUE_LATITUDE,
+        DEFAULT_VENUE_LONGITUDE,
+        DEFAULT_EVENT_DURATION_HOURS,
+        DEFAULT_TARGET_DATE,
+        DEFAULT_ARRIVAL_DATETIME,
+        MIN_DRIVE_TIME_MINUTES,
+        FALLBACK_WEATHER_TEMP_C,
+        FALLBACK_WEATHER_CONDITION,
+        FALLBACK_WEATHER_PRECIP_PERCENT,
+        FALLBACK_WEATHER_WIND_KPH,
+        FALLBACK_WEATHER_RAIN_WARNING,
     )
 except ImportError:
     OPEN_METEO_API_URL = os.environ.get("OPEN_METEO_API_URL", "https://api.open-meteo.com/v1/forecast").strip('"').strip("'")
@@ -47,6 +69,21 @@ except ImportError:
     DEFAULT_ARRIVAL_BUFFER_MINUTES = int(os.environ.get("DEFAULT_ARRIVAL_BUFFER_MINUTES", "30").strip('"').strip("'"))
     WEATHER_RAIN_THRESHOLD_PERCENT = float(os.environ.get("WEATHER_RAIN_THRESHOLD_PERCENT", "40.0").strip('"').strip("'"))
     BUFFER_KEYWORD_MATCHES = ["buffer"]
+    DEFAULT_HOME_NAME = "Home"
+    DEFAULT_HOME_LATITUDE = 40.6782
+    DEFAULT_HOME_LONGITUDE = -73.9442
+    DEFAULT_VENUE_NAME = "City Sports Complex"
+    DEFAULT_VENUE_LATITUDE = 40.7128
+    DEFAULT_VENUE_LONGITUDE = -74.0060
+    DEFAULT_EVENT_DURATION_HOURS = 2.0
+    DEFAULT_TARGET_DATE = "2026-10-17"
+    DEFAULT_ARRIVAL_DATETIME = "2026-10-17T09:00:00"
+    MIN_DRIVE_TIME_MINUTES = 10
+    FALLBACK_WEATHER_TEMP_C = 16.5
+    FALLBACK_WEATHER_CONDITION = "Light Rain / Showers"
+    FALLBACK_WEATHER_PRECIP_PERCENT = 75.0
+    FALLBACK_WEATHER_WIND_KPH = 22.0
+    FALLBACK_WEATHER_RAIN_WARNING = True
 
 
 
@@ -67,15 +104,17 @@ def resolve_arrival_buffer_minutes(explicit_buffer: Optional[int] = None) -> int
 
 def get_context() -> Dict[str, Any]:
     """
-    Returns all calendar events and all saved family preferences.
-    Completely dynamic — returns the full dictionary of stored preferences.
+    Returns all calendar events, saved family preferences, and active schedule conflicts.
+    Completely dynamic — returns the full dictionary of stored preferences and detected conflicts.
     """
     events = get_all_events()
     preferences = get_all_preferences()
+    conflicts = check_conflicts(events)
 
     return {
         "events": [e.model_dump() for e in events],
         "preferences": preferences,
+        "conflicts": [c.model_dump() for c in conflicts],
     }
 
 
@@ -146,30 +185,64 @@ def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return round(R * c, 2)
 
 def estimate_travel(
-    origin_name: str,
-    origin_lat: float,
-    origin_lng: float,
-    dest_name: str,
-    dest_lat: float,
-    dest_lng: float,
-    target_arrival_time: str,
+    origin_name: Optional[str] = None,
+    origin_lat: Optional[float] = None,
+    origin_lng: Optional[float] = None,
+    dest_name: Optional[str] = None,
+    dest_lat: Optional[float] = None,
+    dest_lng: Optional[float] = None,
+    target_arrival_time: Optional[str] = None,
     buffer_minutes: Optional[int] = None,
+    **kwargs,
 ) -> TravelEstimate:
     """
     Estimates driving distance, travel duration, and recommended departure time.
     Calculates departure dynamically using drive time + arrival buffer.
+    Detects online/virtual events to avoid phantom driving calculations.
     """
+    origin_name = origin_name or DEFAULT_HOME_NAME
+    dest_name = dest_name or DEFAULT_VENUE_NAME
+    target_arrival_time = target_arrival_time or DEFAULT_ARRIVAL_DATETIME
+
+    dest_lower = (dest_name or "").lower().strip()
+    is_virtual = any(k in dest_lower for k in ["online", "virtual", "remote", "zoom", "discord"]) or (dest_lower in ["home", origin_name.lower().strip()])
+
+    arrival_dt = datetime.fromisoformat(target_arrival_time)
+
+    if is_virtual:
+        return TravelEstimate(
+            origin=origin_name,
+            destination=dest_name or "Online",
+            distance_km=0.0,
+            travel_time_minutes=0,
+            travel_mode="none",
+            recommended_leave_by=arrival_dt.isoformat(),
+        )
+
+    # Resolve coordinates if not provided
+    if origin_lat is None or origin_lng is None:
+        origin_lat = DEFAULT_HOME_LATITUDE
+        origin_lng = DEFAULT_HOME_LONGITUDE
+
+    if dest_lat is None or dest_lng is None:
+        events = get_all_events()
+        matching_ev = next((e for e in events if e.location and dest_name.lower() in e.location.name.lower()), None)
+        if matching_ev and matching_ev.location:
+            dest_lat = matching_ev.location.latitude
+            dest_lng = matching_ev.location.longitude
+        else:
+            dest_lat = DEFAULT_VENUE_LATITUDE
+            dest_lng = DEFAULT_VENUE_LONGITUDE
+
     distance_km = haversine_distance_km(origin_lat, origin_lng, dest_lat, dest_lng)
     
     # Drive time dynamically derived from configured speed + traffic buffer
     drive_minutes = max(
-        10,
+        MIN_DRIVE_TIME_MINUTES,
         int((distance_km / DEFAULT_DRIVE_SPEED_KMH) * 60) + DEFAULT_TRAFFIC_BUFFER_MINUTES
     )
 
     buffer_minutes = resolve_arrival_buffer_minutes(buffer_minutes)
-
-    arrival_dt = datetime.fromisoformat(target_arrival_time)
     leave_dt = arrival_dt - timedelta(minutes=(drive_minutes + buffer_minutes))
 
     return TravelEstimate(
@@ -234,15 +307,15 @@ async def get_forecast(
     except Exception:
         pass  # Graceful fallback to bundled offline demo forecast
 
-    # Bundled fallback matching the Saturday Tournament scenario (Rain in forecast)
+    # Bundled fallback matching configurable forecast defaults from .env
     return WeatherForecast(
         location=location_name,
         forecast_time=date_str,
-        temperature_c=16.5,
-        weather_condition="Light Rain / Showers",
-        precipitation_chance_percent=75.0,
-        wind_speed_kph=22.0,
-        rain_warning=True,
+        temperature_c=FALLBACK_WEATHER_TEMP_C,
+        weather_condition=FALLBACK_WEATHER_CONDITION,
+        precipitation_chance_percent=FALLBACK_WEATHER_PRECIP_PERCENT,
+        wind_speed_kph=FALLBACK_WEATHER_WIND_KPH,
+        rain_warning=FALLBACK_WEATHER_RAIN_WARNING,
     )
 
 
@@ -267,4 +340,184 @@ def remember_preference(key: str, value: Any) -> Dict[str, Any]:
         "key": clean_key,
         "value": value,
         "message": f"Successfully remembered preference '{clean_key}'.",
+    }
+
+
+# ============================================================================
+# 6. add_event (Add New Calendar Event / Appointment)
+# ============================================================================
+
+def parse_datetime_flexible(dt_input: str) -> str:
+    """
+    Parses arbitrary date/time strings into ISO 8601 format.
+    Handles ISO strings, human dates ('24th october 2026, from 8:05 pm ist'),
+    and standard date formats without crashing.
+    """
+    if not dt_input or not str(dt_input).strip():
+        return datetime.now().isoformat()
+
+    clean = str(dt_input).strip()
+    try:
+        return datetime.fromisoformat(clean.replace("Z", "+00:00")).isoformat()
+    except Exception:
+        pass
+
+    import re
+    # Remove ordinal suffixes: 24th -> 24, 1st -> 1, 2nd -> 2, 3rd -> 3
+    clean_ord = re.sub(r'(\d+)(st|nd|rd|th)', r'\1', clean, flags=re.IGNORECASE)
+    # Strip common timezone abbreviations
+    clean_ord = re.sub(r'\b(ist|est|edt|cst|cdt|pst|pdt|utc|gmt)\b', '', clean_ord, flags=re.IGNORECASE)
+    # Strip filler words and punctuation
+    clean_ord = clean_ord.replace(",", " ")
+    clean_ord = re.sub(r'\b(from|at|on|starts?|ends?)\b', ' ', clean_ord, flags=re.IGNORECASE)
+    clean_ord = re.sub(r'\s+', ' ', clean_ord).strip()
+
+    formats = [
+        "%d %B %Y %I:%M %p",
+        "%d %b %Y %I:%M %p",
+        "%B %d %Y %I:%M %p",
+        "%b %d %Y %I:%M %p",
+        "%d %B %Y %H:%M",
+        "%d %b %Y %H:%M",
+        "%B %d %Y %H:%M",
+        "%b %d %Y %H:%M",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%B %d %Y",
+        "%b %d %Y",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%d/%m/%Y %H:%M",
+        "%m/%d/%Y %H:%M",
+    ]
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(clean_ord, fmt)
+            return parsed.isoformat()
+        except Exception:
+            continue
+
+    # Regex extraction fallback
+    m = re.search(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})', clean)
+    if m:
+        y, mon, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        tm = re.search(r'(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?', clean, re.IGNORECASE)
+        h, mn = 12, 0
+        if tm:
+            h = int(tm.group(1))
+            mn = int(tm.group(2))
+            if tm.group(4) and tm.group(4).lower() == 'pm' and h < 12:
+                h += 12
+            elif tm.group(4) and tm.group(4).lower() == 'am' and h == 12:
+                h = 0
+        return datetime(y, mon, d, h, mn).isoformat()
+
+    return dt_input
+
+
+def add_event(
+    title: str,
+    start_time: str,
+    end_time: Optional[str] = None,
+    location_name: Optional[str] = None,
+    description: Optional[str] = None,
+    attendees: Optional[List[str]] = None,
+    priority: int = 1,
+    required_items: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Inserts a new calendar event into SQLite and checks for immediate conflicts.
+    Dynamically normalizes input timestamps into ISO 8601.
+    """
+    import uuid
+
+    if not title or not str(title).strip():
+        raise ValueError("Event title cannot be empty.")
+
+    clean_title = str(title).strip()
+    norm_start = parse_datetime_flexible(start_time)
+
+    # Generate end_time if missing (configurable duration from .env)
+    if not end_time:
+        try:
+            start_dt = datetime.fromisoformat(norm_start.replace("Z", "+00:00"))
+            norm_end = (start_dt + timedelta(hours=DEFAULT_EVENT_DURATION_HOURS)).isoformat()
+        except Exception:
+            norm_end = norm_start
+    else:
+        norm_end = parse_datetime_flexible(end_time)
+
+    event_id = f"evt_{uuid.uuid4().hex[:8]}"
+    loc = Location(name=location_name, latitude=DEFAULT_VENUE_LATITUDE, longitude=DEFAULT_VENUE_LONGITUDE) if location_name else None
+
+    ev = Event(
+        id=event_id,
+        title=clean_title,
+        start_time=norm_start,
+        end_time=norm_end,
+        location=loc,
+        attendees=attendees or [],
+        description=description,
+        priority=priority,
+        required_items=required_items or [],
+    )
+    save_event(ev)
+
+    # Immediately check if this new event introduces any conflicts
+    all_events = get_all_events()
+    all_conflicts = check_conflicts(all_events)
+    clashes = [c for c in all_conflicts if event_id in (c.event1_id, c.event2_id)]
+
+    return {
+        "success": True,
+        "event": ev.model_dump(),
+        "has_conflicts": len(clashes) > 0,
+        "conflicts": [c.model_dump() for c in clashes],
+        "message": f"Added '{clean_title}' to calendar successfully.",
+    }
+
+
+# ============================================================================
+# 7. remove_event (Remove / Delete Calendar Event)
+# ============================================================================
+
+def remove_event(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Finds and deletes a calendar event from SQLite by title, keyword, or exact ID.
+    Returns the deleted event details and success status.
+    """
+    events = get_all_events()
+    target = None
+
+    if event_id:
+        target = next((e for e in events if e.id == event_id), None)
+
+    if not target and event_title:
+        clean = event_title.strip().lower()
+        # Direct exact or substring match
+        target = next((e for e in events if clean in e.title.lower() or e.title.lower() in clean), None)
+        if not target:
+            # Word token match (e.g. 'soccer' matches "Maya's Soccer Tournament")
+            words = [w for w in clean.split() if len(w) >= 3 and w not in ["event", "calendar", "schedule", "please", "remove", "delete"]]
+            if words:
+                target = next((e for e in events if any(w in e.title.lower() for w in words)), None)
+
+    if not target:
+        return {
+            "success": False,
+            "message": f"Could not find any calendar event matching '{event_title or event_id}'.",
+        }
+
+    deleted = delete_event(target.id)
+    return {
+        "success": deleted,
+        "event_id": target.id,
+        "deleted_event": target.model_dump(),
+        "message": f"Successfully removed '{target.title}' from your calendar.",
     }

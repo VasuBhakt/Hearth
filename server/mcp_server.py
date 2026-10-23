@@ -16,6 +16,8 @@ from tools import (
     estimate_travel as calc_travel,
     get_forecast as fetch_forecast,
     remember_preference as save_preference,
+    add_event as insert_event,
+    remove_event as erase_event,
 )
 from planner import (
     propose_plan as generate_plan,
@@ -25,11 +27,12 @@ from planner import (
     undo_plan as rollback_plan,
 )
 from models import ConflictReport, TravelEstimate, WeatherForecast, PlanCard
+from config import MCP_SERVER_NAME, MCP_SERVER_VERSION, DEFAULT_DEMO_SCENARIO_PROMPT
 
 # Initialize Hearth MCP Server
 mcp = MCPServer(
-    name="hearth-server",
-    version="0.1.0",
+    name=MCP_SERVER_NAME,
+    version=MCP_SERVER_VERSION,
 )
 
 @mcp.tool(name="ping", description="Health check ping to verify server responsiveness")
@@ -87,7 +90,7 @@ async def get_forecast(
     return forecast.model_dump()
 
 @mcp.tool(name="propose_plan", description="Generates a draft PlanCard addressing conflicts, weather, travel, and packing")
-async def propose_plan(request: str = "Get us ready for Saturday's tournament") -> Dict[str, Any]:
+async def propose_plan(request: str = DEFAULT_DEMO_SCENARIO_PROMPT) -> Dict[str, Any]:
     """Builds a draft plan for preview without modifying calendar events."""
     plan = await generate_plan(request=request)
     return plan.model_dump()
@@ -118,6 +121,38 @@ async def undo_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
 async def remember_preference(key: str, value: Any) -> Dict[str, Any]:
     """Persist a preference setting for cross-session memory ('same as last time')."""
     return save_preference(key=key, value=value)
+
+@mcp.tool(name="add_event", description="Add a new event or appointment to the household calendar and check for conflicts")
+async def add_event(
+    title: str,
+    start_time: str,
+    end_time: Optional[str] = None,
+    location_name: Optional[str] = None,
+    description: Optional[str] = None,
+    attendees: Optional[List[str]] = None,
+    priority: int = 1,
+) -> Dict[str, Any]:
+    """Inserts a new event into the calendar and runs immediate conflict detection."""
+    return insert_event(
+        title=title,
+        start_time=start_time,
+        end_time=end_time,
+        location_name=location_name,
+        description=description,
+        attendees=attendees,
+        priority=priority,
+    )
+
+@mcp.tool(name="delete_event", description="Proposes cancelling an event or appointment from the calendar. Creates a draft plan card requiring human approval.")
+async def delete_event(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Builds a draft event cancellation plan card requiring human approval."""
+    from planner import propose_event_cancellation
+    plan = propose_event_cancellation(event_title=event_title, event_id=event_id)
+    return plan.model_dump()
+
 
 
 
