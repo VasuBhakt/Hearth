@@ -50,11 +50,27 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Run the Server
+### 3. Run the Server Locally
 ```bash
 uvicorn server.simulator_api:app --host 127.0.0.1 --port 8080 --reload
 ```
 Open **`http://127.0.0.1:8080`** in your browser.
+
+### 4. Run with Docker (Easiest for Evaluation)
+```bash
+# 1. Copy the example configuration (zero external API keys needed out-of-the-box!)
+cp .env.example .env
+
+# 2. Launch with Docker Compose
+docker compose up --build
+```
+Open **`http://localhost:8080`** in your browser.
+
+*(Alternatively, standard Docker CLI):*
+```bash
+docker build -t hearth .
+docker run -p 8080:8080 --env-file .env hearth
+```
 
 ---
 

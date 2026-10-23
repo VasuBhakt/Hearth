@@ -1,0 +1,14 @@
+services:
+  hearth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hearth-assistant
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - SIMULATOR_HOST=0.0.0.0
+      - SIMULATOR_PORT=8080
+    restart: unless-stopped
