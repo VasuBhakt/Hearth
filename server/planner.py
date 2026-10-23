@@ -84,9 +84,14 @@ try:
         DEFAULT_PLAN_STATUS_COMMITTED,
         ACTION_TYPE_COMMIT_PLAN,
         ACTION_TYPE_RESCHEDULE,
+        ACTION_TYPE_DELETE_EVENT,
         MAX_SLOT_SEARCH_DAYS,
         DEFAULT_SLOT_SEARCH_HOUR,
         WEEKDAY_WORKDAY_MAX,
+        DEFAULT_VENUE_NAME,
+        DEFAULT_VENUE_LATITUDE,
+        DEFAULT_VENUE_LONGITUDE,
+        PLANNING_SIGNALS,
     )
 except ImportError:
     DEFAULT_HOME_NAME = "Home"
@@ -113,6 +118,7 @@ except ImportError:
     DEFAULT_PLAN_STATUS_COMMITTED = "committed"
     ACTION_TYPE_COMMIT_PLAN = "commit_plan"
     ACTION_TYPE_RESCHEDULE = "reschedule_event"
+    ACTION_TYPE_DELETE_EVENT = "delete_event"
     MAX_SLOT_SEARCH_DAYS = 14
     DEFAULT_SLOT_SEARCH_HOUR = 10
     WEEKDAY_WORKDAY_MAX = 5
@@ -257,8 +263,9 @@ def score_event_match(request: str, event: Event) -> float:
         loc_tokens = set(event.location.name.lower().translate(translator).split())
         score += len(query_tokens.intersection(loc_tokens)) * 2.0
 
-    # 5. Priority weighting as tiebreaker
-    score += getattr(event, "priority", 1) * 0.1
+    # 5. Priority weighting as tiebreaker ONLY when there is actual relevance
+    if score > 0:
+        score += getattr(event, "priority", 1) * 0.1
 
     return score
 
@@ -266,7 +273,9 @@ def score_event_match(request: str, event: Event) -> float:
 def find_target_event(request: str, events: List[Event]) -> Optional[Event]:
     """
     Selects the best calendar event matching the user's request.
-    Falls back to the highest-priority upcoming event if no specific match is found.
+    Only falls back to the highest-priority upcoming event if the user
+    explicitly asks a general coordination / tournament / weekend planning query.
+    Returns None for unrelated or unmatched event queries.
     """
     if not events:
         return None
@@ -278,9 +287,13 @@ def find_target_event(request: str, events: List[Event]) -> Optional[Event]:
     if top_score > 0:
         return top_event
 
-    # Fallback: Sort by priority descending, then by earliest start time
-    fallback_sorted = sorted(events, key=lambda e: (-e.priority, e.start_time))
-    return fallback_sorted[0]
+    # Only fall back to highest-priority event if request explicitly signals planning / tournament
+    req_lower = request.lower()
+    if any(k in req_lower for k in PLANNING_SIGNALS):
+        fallback_sorted = sorted(events, key=lambda e: (-e.priority, e.start_time))
+        return fallback_sorted[0]
+
+    return None
 
 
 # ============================================================================
@@ -341,6 +354,101 @@ def find_next_available_slot(
 
 
 # ============================================================================
+# Online / Virtual Event Detector (no false location conflicts)
+# ============================================================================
+
+_ONLINE_VENUE_KEYWORDS = ["online", "virtual", "remote", "home", "zoom", "discord", "teams", "meet"]
+
+def _is_online_event(event: Event) -> bool:
+    """Returns True if the event has no physical travel requirement."""
+    title_lower = event.title.lower()
+    venue_lower = (event.location.name if event.location else "").lower()
+    return (
+        not event.location
+        or any(k in venue_lower for k in _ONLINE_VENUE_KEYWORDS)
+        or any(k in title_lower for k in ["online", "contest", "virtual", "zoom", "codeforces", "leetcode", "hackathon"])
+    )
+
+
+# ============================================================================
+# LLM-Powered Plan Humanizer
+# ============================================================================
+
+async def _humanize_plan_changes(
+    raw_changes: List[str],
+    target_event_title: str,
+    weather: Any,
+    leave_by_str: str,
+) -> List[str]:
+    """
+    Rewrites mechanical f-string proposed_changes into warm, natural sentences
+    using the configured LLM provider. Falls back to raw strings on any error.
+    Each raw change becomes one natural sentence so the plan card still reads cleanly.
+    """
+    if not raw_changes:
+        return raw_changes
+
+    try:
+        import os
+        import json
+        import httpx
+
+        # Build a compact rewrite prompt
+        bullet_list = "\n".join(f"- {c}" for c in raw_changes)
+        weather_note = ""
+        if weather:
+            weather_note = f"Weather: {getattr(weather, 'temperature_c', '?')}°C, {getattr(weather, 'weather_condition', '')}, rain={'yes' if getattr(weather, 'rain_warning', False) else 'no'}."
+
+        system_msg = (
+            "You are Hearth, a warm and practical family assistant. "
+            "Rewrite each planning note below into ONE natural, friendly sentence. "
+            "Keep facts accurate (times, names, places). Use a conversational tone as if talking to a parent. "
+            "Return ONLY a JSON array of strings — one rewritten string per item, same order, no extra text."
+        )
+        user_msg = (
+            f"Planning for: {target_event_title}. {weather_note}\n"
+            f"Notes to rewrite:\n{bullet_list}"
+        )
+
+        groq_key = os.environ.get("GROQ_API_KEY", "").strip().strip('"').strip("'")
+        groq_url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+        groq_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+        if not groq_key:
+            return raw_changes  # No LLM available — return as-is
+
+        payload = {
+            "model": groq_model,
+            "messages": [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.4,
+            "max_tokens": 512,
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {groq_key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Hearth/1.0",
+        }
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(groq_url, headers=headers, json=payload)
+            if resp.status_code != 200:
+                return raw_changes
+
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        # Strip markdown code fences if present
+        content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        rewritten = json.loads(content)
+        if isinstance(rewritten, list) and all(isinstance(s, str) for s in rewritten):
+            return rewritten
+    except Exception:
+        pass  # Silent fallback — never block the plan card
+
+    return raw_changes
+
+
+# ============================================================================
 # Dynamic Plan Generation (propose_plan)
 # ============================================================================
 
@@ -363,17 +471,47 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
     target_dt = datetime.fromisoformat(target_event.start_time)
     target_date_str = target_dt.strftime("%Y-%m-%d")
 
-    # 1. Dynamic Conflict Detection
+    # 1. Dynamic Conflict Detection — filter out online/virtual-vs-physical false positives
     all_conflicts = check_conflicts(events)
     relevant_conflicts = [
         c for c in all_conflicts
         if target_event.id in (c.event1_id, c.event2_id)
     ]
 
+    # Don't flag a conflict when BOTH events are online/home (they can overlap harmlessly)
+    def _both_online(conf: Any) -> bool:
+        e1 = next((e for e in events if e.id == conf.event1_id), None)
+        e2 = next((e for e in events if e.id == conf.event2_id), None)
+        return bool(e1 and e2 and _is_online_event(e1) and _is_online_event(e2))
+
+    relevant_conflicts = [c for c in relevant_conflicts if not _both_online(c)]
+
+    # If the matched target event has lower priority than an event it conflicts with
+    # (e.g. user selected or asked to reschedule Dentist to resolve conflict with Tournament),
+    # anchor the coordination plan to the higher-priority event so travel and packing reflect the main event.
+    for conf in relevant_conflicts:
+        other_id = conf.event2_id if conf.event1_id == target_event.id else conf.event1_id
+        other_event = next((e for e in events if e.id == other_id), None)
+        if other_event and other_event.priority > target_event.priority:
+            target_event = other_event
+            target_dt = datetime.fromisoformat(target_event.start_time)
+            target_date_str = target_dt.strftime("%Y-%m-%d")
+            relevant_conflicts = [
+                c for c in all_conflicts
+                if target_event.id in (c.event1_id, c.event2_id)
+            ]
+            break
+
     # 2. Dynamic Weather Forecast for Venue
-    venue_name = target_event.location.name if target_event.location else "Venue"
-    venue_lat = target_event.location.latitude if target_event.location else 40.7128
-    venue_lng = target_event.location.longitude if target_event.location else -74.0060
+    venue_name = target_event.location.name if target_event.location else "Online / Home"
+    is_online_or_home = (
+        not target_event.location
+        or any(k in venue_name.lower() for k in ["online", "virtual", "remote", "home", "zoom", "discord"])
+        or any(k in target_event.title.lower() for k in ["online", "contest", "virtual", "zoom"])
+    )
+
+    venue_lat = target_event.location.latitude if (target_event.location and target_event.location.latitude) else DEFAULT_VENUE_LATITUDE
+    venue_lng = target_event.location.longitude if (target_event.location and target_event.location.longitude) else DEFAULT_VENUE_LONGITUDE
 
     weather = await get_forecast(
         location_name=venue_name,
@@ -414,6 +552,10 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
     proposed_changes: List[str] = []
     action_items: List[dict] = []
 
+    # Build a virtual "already booked" list that grows as we resolve each conflict.
+    # This prevents two proposed reschedules from landing in the same slot.
+    virtual_events: List[Event] = list(events)
+
     for conf in relevant_conflicts:
         other_id = conf.event2_id if conf.event1_id == target_event.id else conf.event1_id
         other_event = next((e for e in events if e.id == other_id), None)
@@ -421,7 +563,7 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
         if other_event:
             # Compare priorities: Lower priority event yields
             if other_event.priority <= target_event.priority:
-                new_start, new_end = find_next_available_slot(other_event, events, target_dt, preferences)
+                new_start, new_end = find_next_available_slot(other_event, virtual_events, target_dt, preferences)
                 proposed_changes.append(
                     f"Reschedule '{other_event.title}' to {new_start.strftime('%A, %b %d at %I:%M %p')} to resolve overlap with '{target_event.title}'."
                 )
@@ -432,8 +574,17 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
                     "new_start_time": new_start.isoformat(),
                     "new_end_time": new_end.isoformat(),
                 })
+                # Register the proposed slot as a virtual event so subsequent iterations avoid it
+                virtual_placeholder = Event(
+                    id=f"__virtual_{other_event.id}",
+                    title=other_event.title,
+                    start_time=new_start.isoformat(),
+                    end_time=new_end.isoformat(),
+                    priority=other_event.priority,
+                )
+                virtual_events.append(virtual_placeholder)
             else:
-                new_start, new_end = find_next_available_slot(target_event, events, target_dt, preferences)
+                new_start, new_end = find_next_available_slot(target_event, virtual_events, target_dt, preferences)
                 proposed_changes.append(
                     f"Shift '{target_event.title}' to {new_start.strftime('%A, %b %d at %I:%M %p')} to respect higher-priority '{other_event.title}'."
                 )
@@ -444,14 +595,41 @@ async def propose_plan(request: str = "Get us ready for Saturday's tournament") 
                     "new_start_time": new_start.isoformat(),
                     "new_end_time": new_end.isoformat(),
                 })
+                # Register the proposed slot as a virtual event
+                virtual_placeholder = Event(
+                    id=f"__virtual_{target_event.id}",
+                    title=target_event.title,
+                    start_time=new_start.isoformat(),
+                    end_time=new_end.isoformat(),
+                    priority=target_event.priority,
+                )
+                virtual_events.append(virtual_placeholder)
 
     # Departure scheduling proposal
     leave_time_str = travel_estimate.recommended_leave_by[11:16]
-    proposed_changes.append(
-        f"Depart from {origin_name} by {leave_time_str} to arrive {buffer_mins} minutes prior to start."
+    start_time_str = target_event.start_time[11:16]
+
+    if is_online_or_home or travel_estimate.travel_mode == "none":
+        proposed_changes.append(
+            f"For '{target_event.title}' (starts at {start_time_str}): Online / Home event. No driving travel required."
+        )
+    else:
+        drive_mins = travel_estimate.travel_time_minutes
+        arrival_dt = datetime.fromisoformat(target_event.start_time) - timedelta(minutes=buffer_mins)
+        arrival_target_str = arrival_dt.strftime("%H:%M")
+        proposed_changes.append(
+            f"For '{target_event.title}' (starts at {start_time_str}): Depart from {origin_name} by {leave_time_str} ({drive_mins} min drive + {buffer_mins} minutes buffer) to arrive at {venue_name} by {arrival_target_str} ({buffer_mins} minutes early)."
+        )
+
+    # 6. Humanize proposed_changes via LLM (warm, natural language)
+    proposed_changes = await _humanize_plan_changes(
+        raw_changes=proposed_changes,
+        target_event_title=target_event.title,
+        weather=weather,
+        leave_by_str=travel_estimate.recommended_leave_by,
     )
 
-    # 6. Generate and Save Draft PlanCard
+    # 7. Generate and Save Draft PlanCard
     plan_id = f"plan_{target_event.id}_{target_date_str.replace('-', '')}"
     plan_card = PlanCard(
         id=plan_id,
@@ -681,6 +859,12 @@ async def commit_plan(plan_id: str, approval_token: str) -> Dict[str, Any]:
                     event_obj.end_time = action["new_end_time"]
                 save_event(event_obj)
                 executed_actions += 1
+        elif act_type == ACTION_TYPE_DELETE_EVENT:
+            event_id = action.get("event_id")
+            if event_id:
+                deleted = delete_event(event_id)
+                if deleted:
+                    executed_actions += 1
 
     # 4. Update plan status to 'committed'
     plan.status = DEFAULT_PLAN_STATUS_COMMITTED
@@ -745,4 +929,72 @@ async def undo_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
         "restored_events_count": len(raw_events),
         "message": f"Undo successful. Restored calendar to state prior to plan '{target_plan_id}'.",
     }
+
+
+def discard_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Cancels and removes a draft plan. If plan_id is provided, deletes that plan;
+    otherwise deletes all active draft plans from the database.
+    """
+    from db import delete_plan, delete_draft_plans
+    if plan_id:
+        deleted = delete_plan(plan_id)
+        return {"success": deleted, "plan_id": plan_id, "message": "Draft plan cancelled."}
+    else:
+        count = delete_draft_plans()
+        return {"success": True, "count": count, "message": "All draft plans cancelled."}
+
+
+def propose_event_cancellation(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+) -> PlanCard:
+    """
+    Creates a draft PlanCard for cancelling/removing a calendar event with Human-in-the-Loop approval.
+    Safety Guarantee: NEVER mutates calendar events directly.
+    Requires explicit human approval (mint_approval_token + commit_plan) to delete.
+    """
+    events = get_all_events()
+    target = None
+
+    if event_id:
+        target = next((e for e in events if e.id == event_id), None)
+
+    if not target and event_title:
+        target = find_target_event(event_title, events)
+        if not target:
+            clean = event_title.strip().lower()
+            target = next((e for e in events if clean in e.title.lower() or e.title.lower() in clean), None)
+            if not target:
+                words = [w for w in clean.split() if len(w) >= 3 and w not in ["event", "calendar", "schedule", "please", "remove", "delete", "cancel"]]
+                if words:
+                    target = next((e for e in events if any(w in e.title.lower() for w in words)), None)
+
+    if not target:
+        raise ValueError(f"Could not find any calendar event matching '{event_title or event_id}'.")
+
+    target_dt = datetime.fromisoformat(target.start_time)
+    target_date_str = target_dt.strftime("%Y-%m-%d")
+
+    plan_id = f"plan_cancel_{target.id}_{int(datetime.now(timezone.utc).timestamp())}"
+    plan_card = PlanCard(
+        id=plan_id,
+        title=f"Cancel: {target.title}",
+        target_date=target_date_str,
+        leave_by=target.start_time,
+        conflicts=[],
+        weather=None,
+        packing_list=[],
+        proposed_changes=[
+            f"Remove '{target.title}' scheduled for {target_dt.strftime('%A, %b %d at %I:%M %p')} from your calendar upon approval."
+        ],
+        action_items=[{
+            "action": ACTION_TYPE_DELETE_EVENT,
+            "event_id": target.id,
+            "event_title": target.title,
+        }],
+        status=DEFAULT_PLAN_STATUS_DRAFT,
+    )
+    save_plan(plan_card)
+    return plan_card
 

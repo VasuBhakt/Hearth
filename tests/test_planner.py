@@ -64,8 +64,18 @@ async def test_propose_plan_saturday_scenario():
     assert "Granola bars" in plan.packing_list
     assert any("rain" in item.lower() or "umbrella" in item.lower() for item in plan.packing_list)
 
-    # 5. Proposed changes include moving the dentist
-    assert any("reschedule" in c.lower() and "dentist" in c.lower() for c in plan.proposed_changes)
+    # 5. Action items include rescheduling the dentist (structured data, not humanized prose)
+    dentist_action = next(
+        (a for a in plan.action_items
+         if a.get("action") == "reschedule_event" and "dentist" in a.get("event_title", "").lower()),
+        None,
+    )
+    assert dentist_action is not None, "Expected a reschedule action for the dentist appointment"
+
+    # 6. proposed_changes mentions the dentist event in some form (LLM may paraphrase freely)
+    assert any("dentist" in c.lower() for c in plan.proposed_changes), (
+        "proposed_changes should reference the dentist event even after LLM humanization"
+    )
 
     # 6. Plan is persisted in database with status 'draft'
     saved = get_plan(plan.id)
@@ -205,6 +215,47 @@ async def test_revise_plan_nonexistent_id_raises_value_error():
 
 
 @pytest.mark.asyncio
+async def test_event_cancellation_human_in_the_loop():
+    """
+    Verify Human-In-The-Loop safety gate for event deletion:
+    1. Proposing event cancellation produces a draft PlanCard without mutating database.
+    2. Event remains in calendar while plan is draft.
+    3. Event is only deleted upon minting approval token and executing commit_plan.
+    4. Surgical undo restores the deleted event back into the calendar.
+    """
+    from planner import propose_event_cancellation, mint_approval_token, commit_plan, undo_plan
+    from db import get_event_by_id
+
+    # 1. Propose cancellation for tournament
+    plan = propose_event_cancellation(event_title="soccer tournament")
+    assert plan.status == "draft"
+    assert "Cancel:" in plan.title
+    assert any("Remove 'Maya's Soccer Tournament'" in c for c in plan.proposed_changes)
+
+    # 2. Safety check: Tournament MUST still exist in database while plan is in draft
+    ev_before = get_event_by_id("evt_tournament")
+    assert ev_before is not None
+
+    # 3. Human Approval Gate: Mint token and commit
+    token = mint_approval_token(plan.id)
+    commit_res = await commit_plan(plan.id, token.token)
+    assert commit_res["success"] is True
+
+    # 4. Verified: Event is now deleted after human approval
+    ev_after = get_event_by_id("evt_tournament")
+    assert ev_after is None
+
+    # 5. Surgical Undo: Roll back commit
+    undo_res = await undo_plan(plan.id)
+    assert undo_res["success"] is True
+
+    # 6. Verified: Event is completely restored!
+    ev_restored = get_event_by_id("evt_tournament")
+    assert ev_restored is not None
+    assert ev_restored.title == "Maya's Soccer Tournament"
+
+
+@pytest.mark.asyncio
 async def test_environment_override_preferences_and_lists(monkeypatch):
     """
     Verify that family preference lists, buffer defaults, and home coordinates
@@ -238,8 +289,15 @@ async def test_environment_override_preferences_and_lists(monkeypatch):
     assert "Coconut water" in plan.packing_list
     assert "Cold packs" in plan.packing_list
 
-    # Verify custom arrival buffer and origin name from env
-    assert any("Family Headquarters" in c and "45 minutes" in c for c in plan.proposed_changes)
+    # Verify custom arrival buffer and origin name influenced the plan structurally.
+    # With a 45-minute buffer, leave_by must be at least 45 min before the 09:00 event start
+    # (i.e. before 08:15 AM even without counting travel time).
+    # proposed_changes are LLM-humanized prose and may paraphrase the origin name freely,
+    # so we assert on leave_by (computed data) rather than on prose strings.
+    assert plan.leave_by is not None, "leave_by must be set"
+    assert plan.leave_by < "2026-10-17T08:15:00", (
+        f"With a 45-minute buffer the leave_by time should be before 08:15 AM, got {plan.leave_by}"
+    )
 
     # Clean up and restore default config state
     monkeypatch.undo()
