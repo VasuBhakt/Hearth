@@ -24,7 +24,7 @@ export function initHeader(elements, onScenarioTrigger) {
   if (btnSaturdayEl) {
     btnSaturdayEl.addEventListener('click', () => {
       const cfg = stateStore.getState().config;
-      const prompt = cfg ? cfg.default_prompt : "Get us ready for Saturday's tournament";
+      const prompt = cfg ? cfg.default_prompt : "Get us ready for the tournament";
       if (onScenarioTrigger) {
         onScenarioTrigger(prompt);
       }
@@ -39,7 +39,7 @@ export function initHeader(elements, onScenarioTrigger) {
         btnResetDbEl.disabled = true;
         await api.resetDatabase();
         stateStore.setActivePlan(null);
-        stateStore.addMessage('assistant', 'Database has been reset to the default Saturday Tournament scenario.');
+        stateStore.addMessage('assistant', 'Database has been reset to the default Tournament scenario.');
       } catch (err) {
         alert('Reset failed: ' + err.message);
       } finally {

@@ -1,15 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hearth — Family Assistant MCP Simulator</title>
-  <meta name="description" content="Self-hosted, privacy-first family assistant MCP server and interactive simulator featuring Streamable HTTP protocol, autonomous conflict resolution, and cryptographic approval gate." />
+  <meta name="description"
+    content="Self-hosted, privacy-first family assistant MCP server and interactive simulator featuring Streamable HTTP protocol, autonomous conflict resolution, and cryptographic approval gate." />
 
   <!-- Google Fonts: Editorial Plus Jakarta Sans & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+    rel="stylesheet" />
 
   <!-- Modular Design System Styles -->
   <link rel="stylesheet" href="/static/css/tokens.css" />
@@ -19,6 +23,7 @@
   <link rel="stylesheet" href="/static/css/components/plan_card.css" />
   <link rel="stylesheet" href="/static/css/components/telemetry.css" />
 </head>
+
 <body>
   <div class="app-container">
     <!-- Top Executive Brand & Protocol Status Header -->
@@ -39,7 +44,7 @@
       <div class="header-actions">
         <button class="btn-scenario primary" id="btn-scenario-saturday" title="Trigger tournament demo scenario">
           <span>⚡</span>
-          <span>Saturday Tournament Demo</span>
+          <span>Tournament Demo</span>
         </button>
         <button class="btn-scenario" id="btn-reset-db" title="Restore scenario SQLite state">
           <span>🔄</span>
@@ -64,12 +69,9 @@
         <!-- Floating Glassmorphic Input Bar -->
         <div class="chat-input-bar">
           <div class="input-capsule">
-            <input
-              type="text"
-              id="chat-input"
+            <input type="text" id="chat-input"
               placeholder="Give a family instruction (e.g. 'Get us ready for Saturday's tournament')..."
-              autocomplete="off"
-            />
+              autocomplete="off" />
             <button class="btn-mic" id="btn-mic" title="Speak command">🎤</button>
             <button class="btn-send" id="btn-send" title="Send message">➔</button>
           </div>
@@ -99,4 +101,5 @@
   <!-- Main ES Module Application Script -->
   <script type="module" src="/static/js/app.js"></script>
 </body>
+
 </html>

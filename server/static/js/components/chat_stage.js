@@ -133,7 +133,7 @@ function renderMessages(feedEl, messages, isThinking, onActionTrigger) {
   feedEl.querySelectorAll('.btn-schedule-resolve').forEach((btn) => {
     btn.onclick = (e) => {
       e.stopPropagation();
-      const action = btn.getAttribute('data-action') || "Get us ready for Saturday's tournament";
+      const action = btn.getAttribute('data-action') || "Get us ready for the tournament";
       if (onActionTrigger) {
         onActionTrigger(action);
       }

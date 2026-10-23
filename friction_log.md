@@ -7,8 +7,8 @@
 
 ## 📋 Friction Log
 
-| Date | Task Attempted | Steps Taken | Expected | Actual | Severity | Workaround | Concrete Suggestion |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| Date | Task Attempted | Steps Taken | Expected | Actual | Severity | Workaround | Suggestion |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Oct 12** | Verify MCP Python SDK protocol version | Checked `mcp.types.LATEST_PROTOCOL_VERSION` on `mcp-2.3.0` | Support for `>=2025-11-25` | `LATEST_PROTOCOL_VERSION` is `2026-07-28` | Low | None needed; version clears requirement. | Provide an explicit compatibility/version matrix table in SDK docs. |
 | **Oct 14** | FastMCP ASGI Mounting | Attempted to mount MCP server endpoint under FastAPI using `mcp.asgi` | Standard ASGI sub-application routing | Version 2.x renamed `FastMCP` to `MCPServer` with breaking transport changes | Medium | Implemented a unified FastAPI SSE streaming router exposing JSON-RPC `/messages` and `/sse`. | Maintain backward compatibility aliases during major SDK refactors. |
 | **Oct 16** | Open-Meteo City Query | Queried Open-Meteo forecast directly with city names (`"Kolkata"`, `"New York"`) | Forecast data returned for named locations | API rejected text queries (requires numeric `latitude` and `longitude`) | Medium | Integrated Open-Meteo's free geocoding API endpoint to dynamically resolve city names to coordinates. | Add a convenience endpoint on Open-Meteo that accepts `?city=...` directly. |

@@ -1,6 +1,8 @@
 # 🏠 Hearth
 
-> Built for the [Amazon App Dev 2026](https://amazonappdev2026.devpost.com/) Hackathon. Designed for **AWS Bedrock (Amazon Nova)** and local **Model Context Protocol (MCP)** execution.
+> **Submission for [Amazon App Dev 2026](https://amazonappdev2026.devpost.com/)**  
+> 🎯 **Track:** Alexa+ (Self-Hosted MCP Server & Assistant Simulator)  
+> 🌟 **Mini-Challenges:** Open Source Mini-Challenge (MIT) & Developer Friction Log
 
 A local family coordination assistant built with Python, FastAPI, and the Model Context Protocol (MCP). It handles event scheduling, conflict checks, venue weather forecasts, and travel time estimates.
 

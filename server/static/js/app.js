@@ -85,7 +85,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     stateStore.setConfig(config);
 
     // Initial Welcome Message
-    const defaultPrompt = config.default_prompt || "Get us ready for Saturday's tournament";
+    const defaultPrompt = config.default_prompt || "Get us ready for the tournament";
     stateStore.addMessage(
       'assistant',
       `Welcome to Hearth — your self-hosted, privacy-first family coordinator. You can type, speak with the mic, or click "${defaultPrompt}" above to launch the live tournament coordination scenario.`
