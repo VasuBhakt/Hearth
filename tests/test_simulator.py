@@ -17,6 +17,13 @@ from server.config import (
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def deterministic_test_mode(monkeypatch):
+    """Ensures automated tests use deterministic tool router without waiting on local LLM inference."""
+    monkeypatch.setenv("LLM_PROVIDER", "fallback")
+
+
+
 def test_serve_index_html():
     """Validates that the simulator root endpoint serves the single-page application."""
     response = client.get("/")
@@ -117,3 +124,49 @@ def test_approve_and_undo_flow():
     assert data_undo["success"] is True
     assert data_undo["undo"]["restored_events_count"] >= 1
     assert data_undo["plan"]["status"] == DEFAULT_PLAN_STATUS_DRAFT
+
+
+def test_cancel_plan_flow():
+    """Validates that prompting to cancel/remove a plan discards the draft without re-proposing."""
+    client.post("/api/reset")
+
+    # Propose
+    res_prop = client.post(
+        "/api/chat",
+        json={"message": "Get us ready for Saturday's tournament"},
+    )
+    assert res_prop.status_code == 200
+    plan_id = res_prop.json()["plan"]["id"]
+
+    # Cancel plan on prompt
+    res_cancel = client.post(
+        "/api/chat",
+        json={"message": "cancel this plan", "plan_id": plan_id},
+    )
+    assert res_cancel.status_code == 200
+    data_cancel = res_cancel.json()
+    assert data_cancel["plan"] is None
+    assert "cancelled" in data_cancel["message"].lower() or "cleared" in data_cancel["message"].lower()
+
+
+def test_conflict_resolution_anchors_to_main_event():
+    """Validates that conflict resolution anchors to the primary event, not the yielding event."""
+    client.post("/api/reset")
+
+    res = client.post(
+        "/api/chat",
+        json={"message": "Resolve schedule conflict: reschedule Dentist Appointment to free up Maya's Soccer Tournament"},
+    )
+    assert res.status_code == 200
+    plan = res.json()["plan"]
+    assert plan is not None
+    # Must anchor to Maya's Soccer Tournament
+    assert "Soccer" in plan["title"] or "Tournament" in plan["title"]
+    # Must have a structured reschedule action for the Dentist (action_items are never humanized)
+    assert any(
+        a.get("action") == "reschedule_event" and "dentist" in a.get("event_title", "").lower()
+        for a in plan["action_items"]
+    ), "Expected a reschedule action_item for the Dentist appointment"
+    # proposed_changes should reference dentist in some form after LLM humanization
+    assert any("dentist" in ch.lower() for ch in plan["proposed_changes"])
+

@@ -15,7 +15,8 @@ import sys
 import time
 import json
 import asyncio
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Deque
+from collections import deque
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
@@ -34,6 +35,7 @@ from config import (
     SIMULATOR_TITLE,
     DEFAULT_DEMO_SCENARIO_PROMPT,
     MIN_PROTOCOL_VERSION,
+    CURRENT_PROTOCOL_VERSION,
     DEFAULT_HOME_NAME,
     DEFAULT_PLAN_STATUS_DRAFT,
     DEFAULT_PLAN_STATUS_COMMITTED,
@@ -54,6 +56,7 @@ from planner import (
     commit_plan,
     undo_plan,
 )
+from agent import chat_with_agent
 
 app = FastAPI(title=SIMULATOR_TITLE)
 
@@ -66,6 +69,18 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Pub/Sub Queues for Real-Time SSE Telemetry
 subscribers: List[asyncio.Queue] = []
+
+# ============================================================================
+# Session-scoped Conversation History (in-memory, rolling window)
+# ============================================================================
+
+try:
+    from config import CONVERSATION_HISTORY_MAX_TURNS
+except ImportError:
+    CONVERSATION_HISTORY_MAX_TURNS = int(os.environ.get("CONVERSATION_HISTORY_MAX_TURNS", "20"))
+
+# session_id -> deque of {role, content} message dicts
+_session_histories: Dict[str, Deque[Dict[str, str]]] = {}
 
 
 async def broadcast_telemetry(
@@ -80,8 +95,8 @@ async def broadcast_telemetry(
         "tool": tool_name,
         "latency_ms": round(latency_ms, 1),
         "status": status,
-        "protocol": "2026-07-28",
-        "transport": "Streamable HTTP (2025-11-25+)",
+        "protocol": CURRENT_PROTOCOL_VERSION,
+        "transport": f"Streamable HTTP ({MIN_PROTOCOL_VERSION}+)",
         "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3],
         "input": input_data,
         "output": output_data,
@@ -105,6 +120,7 @@ async def broadcast_telemetry(
 class ChatRequest(BaseModel):
     message: str
     plan_id: Optional[str] = None
+    session_id: Optional[str] = None  # Client-generated UUID; if absent, a new history is not tracked
 
 
 class ApproveRequest(BaseModel):
@@ -135,7 +151,7 @@ async def get_simulator_config():
     return {
         "title": SIMULATOR_TITLE,
         "default_prompt": DEFAULT_DEMO_SCENARIO_PROMPT,
-        "protocol_version": "2026-07-28",
+        "protocol_version": CURRENT_PROTOCOL_VERSION,
         "min_protocol": MIN_PROTOCOL_VERSION,
         "home_name": DEFAULT_HOME_NAME,
         "draft_status": DEFAULT_PLAN_STATUS_DRAFT,
@@ -156,11 +172,11 @@ async def stream_telemetry(request: Request):
                 "tool": "protocol_handshake",
                 "latency_ms": 1.2,
                 "status": "connected",
-                "protocol": "2026-07-28",
+                "protocol": CURRENT_PROTOCOL_VERSION,
                 "transport": "Streamable HTTP",
                 "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3],
                 "input": {"min_protocol": MIN_PROTOCOL_VERSION},
-                "output": {"handshake": "accepted", "agent": "Hearth Assistant 1.0"},
+                "output": {"handshake": "accepted", "agent": SIMULATOR_TITLE},
             }
             yield f"data: {json.dumps(init_payload)}\n\n"
 
@@ -185,61 +201,33 @@ async def handle_chat(req: ChatRequest):
     """
     Coordinates tool execution and planning based on typed or spoken user input.
     Broadcasts real-time telemetry events for each MCP tool call.
+    Maintains session-scoped conversation history for multi-turn awareness.
     """
     user_msg = req.message.strip()
     if not user_msg:
         return JSONResponse(status_code=400, content={"error": "Empty message."})
 
-    plan_card = None
-    assistant_text = ""
+    # Retrieve or initialise rolling history for this session
+    session_id = req.session_id
+    history: List[Dict[str, str]] = []
+    if session_id:
+        if session_id not in _session_histories:
+            _session_histories[session_id] = deque(maxlen=CONVERSATION_HISTORY_MAX_TURNS * 2)  # user+assistant pairs
+        history = list(_session_histories[session_id])
 
-    # Check if this is a revision of an active draft plan
-    is_revision = False
-    if req.plan_id:
-        existing_plan = get_plan(req.plan_id)
-        if existing_plan and existing_plan.status == DEFAULT_PLAN_STATUS_DRAFT:
-            # Check for revision keywords: move, reschedule, add, leave, shift, pack
-            lower = user_msg.lower()
-            if any(k in lower for k in ["move", "reschedule", "shift", "add", "pack", "leave", "earlier", "later"]):
-                is_revision = True
+    res = await chat_with_agent(
+        user_message=user_msg,
+        plan_id=req.plan_id,
+        on_telemetry=broadcast_telemetry,
+        conversation_history=history,
+    )
 
-    if is_revision and req.plan_id:
-        t0 = time.perf_counter()
-        updated_plan = await revise_plan(req.plan_id, user_msg)
-        t_rev = (time.perf_counter() - t0) * 1000
-        await broadcast_telemetry("revise_plan", t_rev, {"plan_id": req.plan_id, "instruction": user_msg}, updated_plan.model_dump())
-        plan_card = updated_plan.model_dump()
-        assistant_text = f"I've updated your plan card. Let me know when you'd like to approve it!"
-    else:
-        # Full orchestrator flow: telemetry for read tools
-        t0 = time.perf_counter()
-        ctx = get_context()
-        t_ctx = (time.perf_counter() - t0) * 1000
-        await broadcast_telemetry("get_context", t_ctx, {}, {"events_count": len(ctx.get("events", [])), "prefs_count": len(ctx.get("preferences", {}))})
+    # Append this turn to history so the next request has context
+    if session_id and res.get("reply"):
+        _session_histories[session_id].append({"role": "user", "content": user_msg})
+        _session_histories[session_id].append({"role": "assistant", "content": res["reply"]})
 
-        t0 = time.perf_counter()
-        events = get_all_events()
-        conflicts = check_conflicts(events)
-        t_conf = (time.perf_counter() - t0) * 1000
-        await broadcast_telemetry("check_conflicts", t_conf, {"events_checked": len(events)}, [c.model_dump() for c in conflicts])
-
-        t0 = time.perf_counter()
-        plan = await propose_plan(user_msg)
-        t_plan = (time.perf_counter() - t0) * 1000
-        await broadcast_telemetry("propose_plan", t_plan, {"request": user_msg}, plan.model_dump())
-
-        plan_card = plan.model_dump()
-        assistant_text = (
-            f"I put together a preview for {plan.title}. "
-            f"I found {len(plan.conflicts)} conflict(s), checked the weather forecast, and estimated your departure time. "
-            f"Review the plan card below—nothing is saved until you approve it!"
-        )
-
-    return {
-        "reply": assistant_text,
-        "message": assistant_text,
-        "plan": plan_card,
-    }
+    return res
 
 
 @app.post("/api/approve")
