@@ -131,14 +131,33 @@ export function renderPlanCardHtml(plan) {
     `;
   }
 
+  const isReschedulePlan = Boolean(
+    (plan.title && plan.title.startsWith('Reschedule:')) ||
+    (plan.action_items && plan.action_items.length > 0 && plan.action_items.every((a) => a.action === 'reschedule_event'))
+  );
+
+  let approveBtnText = 'Approve & Commit Plan';
+  let approveBtnIcon = '✓';
+  let approveBtnStyle = '';
+
+  if (isCancellation) {
+    approveBtnText = 'Confirm & Remove Event';
+    approveBtnIcon = '🗑️';
+    approveBtnStyle = 'background: linear-gradient(135deg, #ef4444, #dc2626);';
+  } else if (isReschedulePlan) {
+    approveBtnText = 'Approve Reschedule';
+    approveBtnIcon = '🔄';
+    approveBtnStyle = 'background: linear-gradient(135deg, var(--primary-ember), #ea580c);';
+  }
+
   // Action Buttons Bar
   let actionsBarHtml = '';
   if (!isCommitted) {
     actionsBarHtml = `
       <div class="card-actions-bar">
         <div class="primary-actions-row">
-          <button class="btn-approve" id="btn-approve-${plan.id}" data-plan-id="${plan.id}" style="${isCancellation ? 'background: linear-gradient(135deg, #ef4444, #dc2626);' : ''}">
-            <span>${isCancellation ? '🗑️' : '✓'}</span> ${isCancellation ? 'Confirm & Remove Event' : 'Approve & Commit Plan'}
+          <button class="btn-approve" id="btn-approve-${plan.id}" data-plan-id="${plan.id}" style="${approveBtnStyle}">
+            <span>${approveBtnIcon}</span> ${approveBtnText}
           </button>
         </div>
         ${
@@ -146,9 +165,14 @@ export function renderPlanCardHtml(plan) {
             ? `
         <div class="quick-edits-row">
           <span class="quick-edit-label">Quick Adjust:</span>
-          <button class="btn-quick-edit" data-edit="Move the dentist to Monday">Move dentist to Monday</button>
-          <button class="btn-quick-edit" data-edit="Leave 15 minutes earlier">Leave 15m earlier</button>
-          <button class="btn-quick-edit" data-edit="Add folding chairs to packing list">+ Folding chairs</button>
+          ${isReschedulePlan ? `
+            <button class="btn-quick-edit" data-edit="Move to Monday 10 AM">Monday 10 AM</button>
+            <button class="btn-quick-edit" data-edit="Move to Sunday 3 PM">Sunday 3 PM</button>
+          ` : `
+            <button class="btn-quick-edit" data-edit="Move the dentist to Monday">Move dentist to Monday</button>
+            <button class="btn-quick-edit" data-edit="Leave 15 minutes earlier">Leave 15m earlier</button>
+            <button class="btn-quick-edit" data-edit="Add folding chairs to packing list">+ Folding chairs</button>
+          `}
         </div>
         `
             : ''

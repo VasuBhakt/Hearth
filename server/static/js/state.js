@@ -36,9 +36,9 @@ class AppState {
     this.notify();
   }
 
-  addMessage(role, text, plan = null, schedule = null) {
+  addMessage(role, text, plan = null, schedule = null, event = null) {
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    this.state.messages.push({ role, text, plan, schedule, timestamp, id: `msg_${Date.now()}` });
+    this.state.messages.push({ role, text, plan, schedule, event, timestamp, id: `msg_${Date.now()}` });
     if (plan) {
       this.state.activePlan = plan;
     } else if (text && (text.includes('cancelled') || text.includes('cleared your draft plan') || text.includes('discarded') || text.includes('removed'))) {

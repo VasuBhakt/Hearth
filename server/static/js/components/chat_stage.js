@@ -4,6 +4,7 @@
  */
 import { stateStore } from '../state.js';
 import { renderPlanCardHtml, bindPlanCardEvents } from './plan_card.js';
+import { renderEventDetailCardHtml, bindEventCardActions } from './event_card.js';
 import { formatEventDateTime } from '../datetime.js';
 
 export function initChatStage(elements, onSendMessage) {
@@ -64,6 +65,15 @@ function renderMessages(feedEl, messages, isThinking, onActionTrigger) {
         </div>
       `;
     }
+    // Embed Event Detail Card widget if message has an event attached
+    else if (msg.event) {
+      contentHtml = `
+        <div style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+          ${msg.text ? `<div class="message-bubble">${formatMessageText(msg.text)}</div>` : ''}
+          ${renderEventDetailCardHtml(msg.event)}
+        </div>
+      `;
+    }
     // Embed Schedule Card widget if message has a schedule attached
     else if (msg.schedule && msg.schedule.events && msg.schedule.events.length > 0) {
       contentHtml = `
@@ -104,9 +114,25 @@ function renderMessages(feedEl, messages, isThinking, onActionTrigger) {
   // Bind interactive buttons on Plan Cards (Approve, Undo, Quick Edit)
   bindPlanCardEvents(feedEl, onActionTrigger);
 
+  // Bind interactive actions on Event Detail Cards
+  bindEventCardActions(feedEl, onActionTrigger);
+
+  // Bind interactive inspect clicks on Schedule items
+  feedEl.querySelectorAll('.schedule-event-item').forEach((item) => {
+    item.onclick = (e) => {
+      // Don't trigger if clicked on a resolve button or internal control
+      if (e.target.closest('.btn-schedule-resolve')) return;
+      const title = item.getAttribute('data-event-title');
+      if (title && onActionTrigger) {
+        onActionTrigger(`Show details for ${title}`);
+      }
+    };
+  });
+
   // Bind interactive buttons on Schedule Cards
   feedEl.querySelectorAll('.btn-schedule-resolve').forEach((btn) => {
-    btn.onclick = () => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
       const action = btn.getAttribute('data-action') || "Get us ready for Saturday's tournament";
       if (onActionTrigger) {
         onActionTrigger(action);
@@ -169,7 +195,7 @@ function renderScheduleCardHtml(schedule) {
     }
 
     eventsListHtml += `
-      <div class="${itemClass}">
+      <div class="${itemClass}" data-event-title="${escapeHtml(title)}" title="Click to view full event details">
         <div class="schedule-event-top">
           <div class="schedule-event-title">
             <span class="schedule-event-icon">${icon}</span>
@@ -178,6 +204,7 @@ function renderScheduleCardHtml(schedule) {
           <div class="schedule-event-datetime">
             <span class="schedule-event-date" title="Event Date">📅 ${escapeHtml(dtInfo.dateStr)}</span>
             <span class="schedule-event-time" title="Event Time Window">⏰ ${escapeHtml(dtInfo.timeStr)}</span>
+            <span class="schedule-event-inspect-btn">🔍 View</span>
           </div>
         </div>
         ${loc ? `<div class="schedule-event-meta">📍 ${escapeHtml(loc)}</div>` : ''}
