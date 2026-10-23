@@ -11,6 +11,7 @@ from db import (
     PlanCardModel,
     ApprovalTokenModel,
     UndoEntryModel,
+    ChatMessageModel,
     save_event,
     set_preference,
 )
@@ -21,6 +22,7 @@ def seed_demo_data() -> None:
 
     with SessionLocal() as session:
         # Wipe old data respecting FK constraints (children first)
+        session.query(ChatMessageModel).delete()
         session.query(ApprovalTokenModel).delete()
         session.query(UndoEntryModel).delete()
         session.query(PlanCardModel).delete()

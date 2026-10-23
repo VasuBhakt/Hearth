@@ -170,3 +170,48 @@ def test_conflict_resolution_anchors_to_main_event():
     # proposed_changes should reference dentist in some form after LLM humanization
     assert any("dentist" in ch.lower() for ch in plan["proposed_changes"])
 
+
+def test_persistent_session_chat_history():
+    """Validates that multi-turn chat dialogues persist to SQLite and survive cache clears."""
+    from server.db import get_chat_history
+    from server.simulator_api import _session_histories
+
+    client.post("/api/reset")
+    sess_id = "test-session-persistence-42"
+
+    # 1. Send first message
+    r1 = client.post("/api/chat", json={
+        "message": "Get us ready for Saturday's tournament",
+        "session_id": sess_id,
+    })
+    assert r1.status_code == 200
+
+    # Verify directly from SQLite
+    saved_history = get_chat_history(sess_id)
+    assert len(saved_history) == 2
+    assert saved_history[0]["role"] == "user"
+    assert "Saturday" in saved_history[0]["content"]
+    assert saved_history[1]["role"] == "assistant"
+
+    # 2. Simulate server restart / memory wipe by clearing in-memory cache
+    _session_histories.clear()
+
+    # 3. Send second follow-up message with the same session_id
+    r2 = client.post("/api/chat", json={
+        "message": "Move the dentist to Monday",
+        "session_id": sess_id,
+        "plan_id": r1.json()["plan"]["id"],
+    })
+    assert r2.status_code == 200
+
+    # Verify history now contains all 4 turns in SQLite
+    updated_history = get_chat_history(sess_id)
+    assert len(updated_history) == 4
+    assert updated_history[2]["role"] == "user"
+    assert "Monday" in updated_history[2]["content"]
+
+    # 4. Reset scenario and verify history is purged
+    client.post("/api/reset")
+    assert len(get_chat_history(sess_id)) == 0
+
+

@@ -41,7 +41,14 @@ from config import (
     DEFAULT_PLAN_STATUS_COMMITTED,
 )
 from seed import seed_demo_data
-from db import get_all_events, get_plan, get_all_preferences
+from db import (
+    get_all_events,
+    get_plan,
+    get_all_preferences,
+    save_chat_message,
+    get_chat_history,
+    clear_chat_history,
+)
 from tools import (
     get_context,
     check_conflicts,
@@ -207,12 +214,14 @@ async def handle_chat(req: ChatRequest):
     if not user_msg:
         return JSONResponse(status_code=400, content={"error": "Empty message."})
 
-    # Retrieve or initialise rolling history for this session
-    session_id = req.session_id
+    # Retrieve or initialise persistent history for this session from SQLite
+    session_id = (req.session_id or "").strip()
     history: List[Dict[str, str]] = []
     if session_id:
         if session_id not in _session_histories:
-            _session_histories[session_id] = deque(maxlen=CONVERSATION_HISTORY_MAX_TURNS * 2)  # user+assistant pairs
+            # Warm in-memory cache from SQLite
+            saved = get_chat_history(session_id, limit=CONVERSATION_HISTORY_MAX_TURNS * 2)
+            _session_histories[session_id] = deque(saved, maxlen=CONVERSATION_HISTORY_MAX_TURNS * 2)
         history = list(_session_histories[session_id])
 
     res = await chat_with_agent(
@@ -222,10 +231,12 @@ async def handle_chat(req: ChatRequest):
         conversation_history=history,
     )
 
-    # Append this turn to history so the next request has context
+    # Append this turn to SQLite and in-memory cache so subsequent requests retain context
     if session_id and res.get("reply"):
         _session_histories[session_id].append({"role": "user", "content": user_msg})
         _session_histories[session_id].append({"role": "assistant", "content": res["reply"]})
+        save_chat_message(session_id, "user", user_msg)
+        save_chat_message(session_id, "assistant", res["reply"])
 
     return res
 
@@ -282,6 +293,8 @@ async def handle_reset():
     """Resets the SQLite database to the default Saturday tournament demo scenario."""
     t0 = time.perf_counter()
     seed_demo_data()
+    _session_histories.clear()
+    clear_chat_history()
     t_reset = (time.perf_counter() - t0) * 1000
     await broadcast_telemetry("seed_demo_data", t_reset, {}, {"status": "re-seeded", "scenario": "Saturday Tournament"})
     return {"success": True, "message": "Database reset to initial demo state."}

@@ -283,6 +283,16 @@ class UndoEntryModel(Base):
         )
 
 
+class ChatMessageModel(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String, index=True, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[str] = mapped_column(String, nullable=False)
+
+
 # ============================================================================
 # Database Lifecycle & CRUD Helper Functions
 # ============================================================================
@@ -525,3 +535,45 @@ def delete_undo_entry(entry_id: str) -> bool:
             session.commit()
             return True
         return False
+
+
+# --- Chat History CRUD ---
+
+def save_chat_message(session_id: str, role: str, content: str) -> None:
+    """Persist a conversation turn for a session."""
+    from datetime import datetime, timezone
+    with SessionLocal() as session:
+        session.add(ChatMessageModel(
+            session_id=session_id,
+            role=role,
+            content=content,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        ))
+        session.commit()
+
+
+def get_chat_history(session_id: str, limit: int = 40) -> list[dict[str, str]]:
+    """Retrieve recent chat history for a session in chronological order."""
+    with SessionLocal() as session:
+        models = session.scalars(
+            select(ChatMessageModel)
+            .where(ChatMessageModel.session_id == session_id)
+            .order_by(ChatMessageModel.id.desc())
+            .limit(limit)
+        ).all()
+        return [{"role": m.role, "content": m.content} for m in reversed(models)]
+
+
+def clear_chat_history(session_id: Optional[str] = None) -> int:
+    """Clear chat history for a specific session or all sessions."""
+    with SessionLocal() as session:
+        stmt = delete(ChatMessageModel)
+        if session_id:
+            stmt = stmt.where(ChatMessageModel.session_id == session_id)
+        result = session.execute(stmt)
+        session.commit()
+        return result.rowcount
+
+
+# Automatically ensure any newly defined tables are created
+Base.metadata.create_all(bind=engine)
