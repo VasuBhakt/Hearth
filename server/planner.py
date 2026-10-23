@@ -372,6 +372,97 @@ def find_next_available_slot(
     return fallback_start, fallback_start + duration
 
 
+def parse_natural_datetime(text: str, reference_dt: Optional[datetime] = None) -> Optional[datetime]:
+    """
+    Parses natural date/time strings like '18th oct 2026 3 pm', 'Monday 4pm', or 'Oct 18 15:00'.
+    Handles 'from <src> to <dest>' and preserves event timing if 'timings remaining same' or unspecified.
+    Returns datetime or None.
+    """
+    if not text:
+        return None
+    ref = reference_dt or datetime.now()
+    clean = text.lower().strip()
+
+    # 1. ISO format check
+    try:
+        return datetime.fromisoformat(clean)
+    except Exception:
+        pass
+
+    # Check if there is a 'from <src> to <dest>' or 'to <dest>' pattern
+    # Avoid matching time ranges like 'from 3pm to 4pm' or 'from 10:00 to 11:00'
+    is_time_range = bool(re.search(r'\bfrom\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+to\s+\d{1,2}', clean, re.IGNORECASE))
+    if not is_time_range:
+        to_sub = re.search(r'\bto\s+([a-z0-9].+)$', clean, re.IGNORECASE)
+        if to_sub and any(w in clean for w in ["from ", "reschedule", "shift", "move", "postpone"]):
+            clean = to_sub.group(1).strip()
+
+    # If phrase says "timings remaining same", "same timing", "same time", strip it
+    clean = re.sub(r'\b(timings?\s+remaining\s+same|same\s+timings?|keep\s+(the\s+)?same\s+times?)\b', '', clean, flags=re.IGNORECASE).strip()
+
+    # 2. Extract hour / minute / am_pm
+    time_match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b', clean, re.IGNORECASE)
+    hour = ref.hour if reference_dt else 10
+    minute = ref.minute if reference_dt else 0
+    if time_match:
+        raw_h = int(time_match.group(1))
+        raw_m = int(time_match.group(2)) if time_match.group(2) else 0
+        ampm = (time_match.group(3) or "").lower()
+        if ampm == "pm" and raw_h < 12:
+            raw_h += 12
+        elif ampm == "am" and raw_h == 12:
+            raw_h = 0
+        hour = raw_h
+        minute = raw_m
+
+    # 3. Extract day, month, year
+    month_names = {
+        "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
+        "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
+        "aug": 8, "august": 8, "sep": 9, "september": 9, "oct": 10, "october": 10,
+        "nov": 11, "november": 11, "dec": 12, "december": 12
+    }
+    # If phrase has '<date1> to <date2>', pick <date2> as the target date
+    date_to_date = re.search(
+        r'\b(?:from\s+)?(?:\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+|[a-z]+\s+\d{1,2}(?:st|nd|rd|th)?)\s+to\s+(\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+|[a-z]+\s+\d{1,2}(?:st|nd|rd|th)?)\b',
+        clean,
+        re.IGNORECASE
+    )
+    search_str = date_to_date.group(1) if date_to_date else clean
+
+    date_match = re.search(
+        r'\b(?:(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+)|([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?)(?:\s+(\d{4}))?\b',
+        search_str,
+        re.IGNORECASE
+    )
+    if date_match:
+        if date_match.group(1) and date_match.group(2):
+            d = int(date_match.group(1))
+            m_str = date_match.group(2).lower()
+        else:
+            m_str = date_match.group(3).lower()
+            d = int(date_match.group(4))
+        m = month_names.get(m_str[:3])
+        y = int(date_match.group(5)) if date_match.group(5) else ref.year
+        if m:
+            try:
+                return datetime(y, m, d, hour, minute)
+            except Exception:
+                pass
+
+    # 4. Check weekday name
+    for idx, wname in enumerate(WEEKDAY_NAMES):
+        if wname in clean:
+            days_ahead = (idx - ref.weekday()) % 7
+            if days_ahead == 0:
+                days_ahead = 7
+            target_d = ref.date() + timedelta(days=days_ahead)
+            return datetime(target_d.year, target_d.month, target_d.day, hour, minute)
+
+    return None
+
+
+
 # ============================================================================
 # Online / Virtual Event Detector (no false location conflicts)
 # ============================================================================
@@ -431,7 +522,7 @@ async def _humanize_plan_changes(
 
         groq_key = os.environ.get("GROQ_API_KEY", "").strip().strip('"').strip("'")
         groq_url = os.environ.get("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions")
-        groq_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+        groq_model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 
         if not groq_key:
             return raw_changes  # No LLM available — return as-is
@@ -703,41 +794,109 @@ async def revise_plan(plan_id: str, instruction: str) -> PlanCard:
                 plan.packing_list.append(clean_item)
 
     # 2. Generic Reschedule Pattern
-    # Matches: 'move the dentist to Monday', 'reschedule practice to Tuesday 4 PM'
+    # Matches: 'move the dentist to Monday', 'reschedule practice to Tuesday 4 PM', 'reschedule it on 18th oct 2026 3 pm'
     reschedule_match = re.search(
-        r"(?:move|reschedule|shift)\s+(?:the\s+)?(?P<target>.+?)\s+to\s+(?P<dest>.+)",
+        r"(?:move|reschedule|shift)\s+(?:the\s+)?(?P<target>.+?)\s+(?:to|on|for)\s+(?P<dest>.+)",
         instruction,
         re.IGNORECASE,
     )
-    if reschedule_match:
+    target_term = ""
+    dest_term = ""
+    if not reschedule_match and any(w in instruction.lower() for w in ["reschedule", "move", "shift"]):
+        dest_only = re.search(r"(?:move|reschedule|shift)\s+(?:to|on|for)\s+(?P<dest>.+)", instruction, re.IGNORECASE)
+        if dest_only:
+            target_term = "it"
+            dest_term = dest_only.group("dest").strip()
+            reschedule_match = True
+    elif reschedule_match:
         target_term = reschedule_match.group("target").strip().lower()
         dest_term = reschedule_match.group("dest").strip()
 
-        # Resolve full event title if possible
+    if reschedule_match and dest_term:
         events = get_all_events()
-        matched_event = find_target_event(target_term, events)
+        matched_event = None
+
+        # Resolve pronoun "it" or empty target using active plan
+        if target_term in ["it", "this", "that", "the event", "the appointment", ""]:
+            for act in plan.action_items:
+                if act.get("event_id"):
+                    matched_event = get_event_by_id(act["event_id"])
+                    if matched_event:
+                        break
+            if not matched_event and plan.title:
+                clean_title = re.sub(r'^(?:Cancel|Reschedule|Plan):\s*', '', plan.title).strip()
+                matched_event = find_target_event(clean_title, events)
+        else:
+            matched_event = find_target_event(target_term, events)
+
         target_display = matched_event.title if matched_event else target_term.title()
 
-        # Detect target weekday dynamically from dest_term
-        target_weekday = None
-        for idx, wname in enumerate(WEEKDAY_NAMES):
-            if wname in dest_term.lower():
-                target_weekday = idx
-                break
+        try:
+            ref_dt = datetime.fromisoformat(plan.target_date)
+        except Exception:
+            ref_dt = datetime.now()
 
+        # Try parsing natural datetime (e.g. '18th oct 2026 3 pm')
+        parsed_dt = parse_natural_datetime(dest_term, ref_dt)
+        if parsed_dt:
+            new_start = parsed_dt
+            orig_duration = timedelta(hours=1)
+            if matched_event:
+                try:
+                    orig_duration = datetime.fromisoformat(matched_event.end_time) - datetime.fromisoformat(matched_event.start_time)
+                except Exception:
+                    pass
+            new_end = new_start + orig_duration
+        else:
+            target_weekday = None
+            for idx, wname in enumerate(WEEKDAY_NAMES):
+                if wname in dest_term.lower():
+                    target_weekday = idx
+                    break
+            if matched_event:
+                new_start, new_end = find_next_available_slot(
+                    matched_event, events, ref_dt, preferences=None, target_weekday=target_weekday
+                )
+            else:
+                new_start = ref_dt + timedelta(days=1)
+                new_end = new_start + timedelta(hours=1)
+
+        # Check for explicit time range in dest_term (e.g. 'from 3pm to 4pm', '3:00 pm to 4:00 pm')
+        range_match = re.search(
+            r'(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
+            dest_term,
+            re.IGNORECASE,
+        )
+        if range_match and parsed_dt:
+            start_h = int(range_match.group(1))
+            start_m = int(range_match.group(2)) if range_match.group(2) else 0
+            end_ampm = (range_match.group(6) or "").lower()
+            start_ampm = (range_match.group(3) or end_ampm).lower()
+            end_h = int(range_match.group(4))
+            end_m = int(range_match.group(5)) if range_match.group(5) else 0
+            if start_ampm == "pm" and start_h < 12:
+                start_h += 12
+            elif start_ampm == "am" and start_h == 12:
+                start_h = 0
+            if end_ampm == "pm" and end_h < 12:
+                end_h += 12
+            elif end_ampm == "am" and end_h == 12:
+                end_h = 0
+            new_start = new_start.replace(hour=start_h, minute=start_m)
+            new_end = new_start.replace(hour=end_h, minute=end_m)
+
+        # Update or append to plan.action_items
         if matched_event:
-            try:
-                ref_dt = datetime.fromisoformat(plan.target_date)
-            except ValueError:
-                ref_dt = datetime.now()
+            # If this was previously a cancellation plan, convert it to a reschedule plan
+            if plan.title.startswith("Cancel:"):
+                plan.title = f"Reschedule: {matched_event.title}"
 
-            new_start, new_end = find_next_available_slot(
-                matched_event, events, ref_dt, preferences=None, target_weekday=target_weekday
-            )
-            # Update or append to plan.action_items
             action_updated = False
             for act in plan.action_items:
-                if act.get("event_id") == matched_event.id:
+                act["action"] = ACTION_TYPE_RESCHEDULE
+                if act.get("event_id") == matched_event.id or len(plan.action_items) == 1:
+                    act["event_id"] = matched_event.id
+                    act["event_title"] = matched_event.title
                     act["new_start_time"] = new_start.isoformat()
                     act["new_end_time"] = new_end.isoformat()
                     action_updated = True
@@ -751,19 +910,58 @@ async def revise_plan(plan_id: str, instruction: str) -> PlanCard:
                     "new_end_time": new_end.isoformat(),
                 })
 
-        updated_changes = []
-        applied = False
+        new_time_display = f"{new_start.strftime('%A, %b %d')} from {new_start.strftime('%I:%M %p')} to {new_end.strftime('%I:%M %p')}"
+        resched_msg = f"Confirmed: Reschedule '{target_display}' to {new_time_display}."
+
+        # Recalculate departure for the new event start time
+        from db import get_all_preferences
+        preferences = get_all_preferences()
+        origin_name, origin_lat, origin_lng = resolve_origin_location(preferences)
+        buffer_mins = resolve_arrival_buffer(preferences)
+        venue_name = matched_event.location.name if (matched_event and matched_event.location) else DEFAULT_VENUE_NAME
+        venue_lat = matched_event.location.latitude if (matched_event and matched_event.location and matched_event.location.latitude) else DEFAULT_VENUE_LATITUDE
+        venue_lng = matched_event.location.longitude if (matched_event and matched_event.location and matched_event.location.longitude) else DEFAULT_VENUE_LONGITUDE
+
+        travel_est = estimate_travel(
+            origin_name=origin_name,
+            origin_lat=origin_lat,
+            origin_lng=origin_lng,
+            dest_name=venue_name,
+            dest_lat=venue_lat,
+            dest_lng=venue_lng,
+            target_arrival_time=new_start.isoformat(),
+            buffer_minutes=buffer_mins,
+        )
+        plan.leave_by = travel_est.recommended_leave_by
+        leave_dt = datetime.fromisoformat(travel_est.recommended_leave_by)
+        arrival_dt = new_start - timedelta(minutes=buffer_mins)
+
+        departure_msg = (
+            f"Plan to leave home by {leave_dt.strftime('%I:%M %p')} on {new_start.strftime('%a, %b %d')} "
+            f"({travel_est.travel_time_minutes}-minute drive plus a {buffer_mins}-minute buffer) "
+            f"to arrive at {venue_name} by {arrival_dt.strftime('%I:%M %p')}."
+        )
+
+        clean_old_changes = []
         for change in plan.proposed_changes:
-            if target_term in change.lower() or (matched_event and matched_event.title.lower() in change.lower()):
-                updated_changes.append(f"Confirmed: Reschedule '{target_display}' to {dest_term.title()}.")
-                applied = True
-            else:
-                updated_changes.append(change)
+            ch_lower = change.lower().replace("’", "'")
+            t_lower = target_display.lower().replace("’", "'")
+            if any(k in ch_lower for k in ["remove", "cancel", "reschedule", "leave home", "depart", "drive plus", "minute drive", t_lower]):
+                continue
+            clean_old_changes.append(change)
 
-        if not applied:
-            updated_changes.insert(0, f"Confirmed: Reschedule '{target_display}' to {dest_term.title()}.")
+        plan.proposed_changes = [resched_msg, departure_msg] + clean_old_changes
+        plan.target_date = new_start.strftime("%Y-%m-%d")
 
-        plan.proposed_changes = updated_changes
+        try:
+            plan.weather = await get_forecast(
+                location_name=venue_name,
+                latitude=venue_lat,
+                longitude=venue_lng,
+                date_str=plan.target_date,
+            )
+        except Exception:
+            pass
 
     # 3. Generic Time Shift Pattern
     # Matches: 'leave 15 minutes earlier', 'depart 20 mins later'
@@ -1037,4 +1235,91 @@ def propose_event_cancellation(
     )
     save_plan(plan_card)
     return plan_card
+
+
+def propose_event_reschedule(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+    target_datetime: Optional[str] = None,
+    target_date: Optional[str] = None,
+) -> PlanCard:
+    """
+    Creates a draft PlanCard for rescheduling an existing calendar event with Human-in-the-Loop approval.
+    Safety Guarantee: NEVER mutates calendar events directly until approval gate commits.
+    """
+    events = get_all_events()
+    target = None
+
+    if event_id:
+        target = next((e for e in events if e.id == event_id), None)
+
+    if not target and event_title:
+        search_query = f"{event_title} {target_date or ''}".strip()
+        target = find_target_event(search_query, events)
+        if not target:
+            clean = event_title.strip().lower()
+            target = next((e for e in events if clean in e.title.lower() or e.title.lower() in clean), None)
+            if not target:
+                words = [w for w in clean.split() if len(w) >= 3 and w not in ["event", "calendar", "schedule", "please", "reschedule", "move", "shift"]]
+                if words:
+                    target = next((e for e in events if any(w in e.title.lower() for w in words)), None)
+
+    if not target:
+        raise ValueError(f"Could not find any calendar event matching '{event_title or event_id}'.")
+
+    try:
+        dt_start = datetime.fromisoformat(target.start_time)
+        dt_end = datetime.fromisoformat(target.end_time)
+        duration = dt_end - dt_start
+    except Exception:
+        dt_start = datetime.now()
+        duration = timedelta(hours=1)
+
+    parsed_dt = parse_natural_datetime(target_datetime, dt_start) if target_datetime else None
+    if parsed_dt:
+        new_start = parsed_dt
+        new_end = new_start + duration
+    else:
+        new_start, new_end = find_next_available_slot(target, events, dt_start)
+
+    plan_id = f"plan_reschedule_{target.id}_{int(datetime.now(timezone.utc).timestamp())}"
+
+    simulated_events = []
+    for ev in events:
+        if ev.id == target.id:
+            sim_ev = ev.model_copy()
+            sim_ev.start_time = new_start.isoformat()
+            sim_ev.end_time = new_end.isoformat()
+            simulated_events.append(sim_ev)
+        else:
+            simulated_events.append(ev)
+    all_conflicts = check_conflicts(simulated_events)
+    target_conflicts = [
+        c for c in all_conflicts
+        if target.title.lower() in (c.details or "").lower() or c.event_a == target.title or c.event_b == target.title
+    ]
+
+    plan_card = PlanCard(
+        id=plan_id,
+        title=f"Reschedule: {target.title}",
+        target_date=new_start.strftime("%Y-%m-%d"),
+        leave_by=new_start.isoformat(),
+        conflicts=target_conflicts,
+        weather=None,
+        packing_list=[],
+        proposed_changes=[
+            f"Reschedule '{target.title}' from {dt_start.strftime('%a, %b %d at %I:%M %p')} to {new_start.strftime('%A, %b %d at %I:%M %p')} upon approval."
+        ],
+        action_items=[{
+            "action": ACTION_TYPE_RESCHEDULE,
+            "event_id": target.id,
+            "event_title": target.title,
+            "new_start_time": new_start.isoformat(),
+            "new_end_time": new_end.isoformat(),
+        }],
+        status=DEFAULT_PLAN_STATUS_DRAFT,
+    )
+    save_plan(plan_card)
+    return plan_card
+
 

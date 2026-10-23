@@ -11,7 +11,9 @@ import sys
 import time
 import json
 import asyncio
+import re
 import httpx
+from datetime import datetime
 from typing import Optional, Dict, Any, List, Callable
 
 # Ensure local imports resolve
@@ -45,8 +47,18 @@ from config import (
     PLANNING_SIGNALS,
     CONFLICT_KEYWORDS,
     WEATHER_KEYWORDS,
+    PLANNING_ACTION_WORDS,
+    PRONOUN_LOCATION_PHRASES,
+    PRONOUN_TIME_PHRASES,
+    PRONOUN_ATTENDEES_PHRASES,
+    PRONOUN_GEAR_PHRASES,
+    EVENT_DETAILS_KEYWORDS,
+    HISTORY_STOPWORDS,
+    DELETE_EVENT_NOUNS,
+    DELETE_EVENT_VERBS,
 )
 from db import get_all_events, get_plan
+from models import Event
 from tools import (
     get_context,
     check_conflicts,
@@ -55,6 +67,7 @@ from tools import (
     remember_preference,
     add_event,
     remove_event,
+    get_event_details,
     parse_datetime_flexible,
 )
 from planner import (
@@ -63,6 +76,7 @@ from planner import (
     find_target_event,
     discard_plan,
     propose_event_cancellation,
+    propose_event_reschedule,
 )
 
 # ============================================================================
@@ -259,22 +273,57 @@ MCP_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "reschedule_event",
+            "description": "Propose moving or rescheduling an event or appointment to a new date/time or to the next open slot. Generates a draft reschedule plan card requiring human approval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_title": {"type": "string", "description": "Title or keyword of the event to reschedule, e.g. 'Dentist Appointment'"},
+                    "event_id": {"type": "string", "description": "Optional specific event ID"},
+                    "target_datetime": {"type": "string", "description": "Optional new target date and time, e.g. '2026-10-18T15:00:00' or '18th oct 2026 3 pm'"},
+                },
+                "required": ["event_title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_event_details",
+            "description": "Retrieve comprehensive details for an individual saved event or appointment, including attendees, priority, notes, location coordinates, required gear, and conflicts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_title": {"type": "string", "description": "Title or keyword of the event to inspect, e.g. 'Soccer Tournament' or 'Dentist'"},
+                    "event_id": {"type": "string", "description": "Optional specific event ID"},
+                    "target_date": {"type": "string", "description": "Optional specific date or day of the event, e.g. 'October 19th' or '2026-10-19'"},
+                },
+                "required": ["event_title"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """You are Hearth, a self-hosted, privacy-first family assistant MCP agent.
 You help a household coordinate family events, youth sports tournaments, appointments, travel, and packing checklists.
-You have access to MCP tools: get_context, add_event, delete_event, check_conflicts, get_forecast, estimate_travel, propose_plan, revise_plan, discard_plan, remember_preference.
+You have access to MCP tools: get_context, add_event, delete_event, reschedule_event, check_conflicts, get_forecast, estimate_travel, propose_plan, revise_plan, discard_plan, get_event_details, remember_preference.
 
 CRITICAL RULES:
-1. ADDING EVENTS: If the user asks to add, create, or schedule a new event or appointment, you MUST call the `add_event` tool with the event details! NEVER call `propose_plan` when the user is asking to add a calendar event.
-2. DELETING / REMOVING EVENTS (HUMAN-IN-THE-LOOP): If the user asks to delete, remove, or cancel an event on their calendar (e.g. 'remove the soccer tournament event', 'delete dentist appointment'), you MUST call the `delete_event` tool with the event title or ID! Explain clearly that a draft cancellation proposal has been generated and that their calendar will NOT be modified until they click "Approve" on the card.
-3. CANCELLING PLANS: If the user asks to cancel, remove, delete, or clear the draft plan card (e.g. 'cancel plan', 'remove plan', 'start over'), call the `discard_plan` tool!
-4. CONFLICT AWARENESS: When get_context, check_conflicts, or add_event returns conflicts (such as Maya's Dentist Appointment directly overlapping with Maya's Soccer Tournament), you MUST prominently alert the user about the clash! Never claim there are no conflicts when a conflict is returned.
-5. SCHEDULE INQUIRY: If asked for the schedule, call get_context. Present the events clearly and explicitly warn the user about any clashing events.
-6. PLANNING: Only call propose_plan when the user asks to prepare, plan logistics, or get ready for an existing tournament or event.
-7. If modifying an existing plan, call revise_plan.
-8. GREETINGS & CASUAL CHAT: If greeted (e.g. "hi", "hello"), reply warmly and explain how you can help without calling tools.
-9. Be warm, concise, and helpful."""
+1. STRICT DATABASE GROUND TRUTH: The SQLite database via `get_context` is the ONLY ground truth for the family's schedule. Never invent, recap, or hallucinate past unapplied drafts or pending queues. When asked about the schedule or current status, always call `get_context` and present the exact saved database events.
+2. SCHEDULE QUESTIONS: When asked 'what's on our schedule?', 'what is the schedule now?', 'whats scheduled?', or any calendar inquiry, you MUST call `get_context` to fetch current events from the database.
+3. RESCHEDULING / MOVING EVENTS (HUMAN-IN-THE-LOOP): If the user asks to reschedule, move, shift, or postpone ANY event (e.g. 'can reschedule maya's football tournament from 19th oct to 17th oct, with the timings remaining same', 'reschedule dentist appointment to monday 3pm', 'move the event'), you MUST call `reschedule_event` with the event title and destination date/time! NEVER call `propose_plan` or `delete_event` when the user asks to reschedule or move an event!
+4. DELETING / REMOVING EVENTS (HUMAN-IN-THE-LOOP): If the user asks to delete, remove, or cancel an event on their calendar, call `delete_event`.
+5. CANCELLING PLANS: If the user asks to cancel, remove, or clear the active draft plan card, call `discard_plan`.
+6. ADDING EVENTS: If the user asks to add or create a new event, call `add_event`.
+7. PLANNING: Only call `propose_plan` when the user asks to prepare, plan logistics, or get ready for an upcoming event (e.g. 'get us ready for Saturday').
+8. SINGLE DRAFT AT A TIME: There is strictly at most ONE active proposal card at any time; revising or rescheduling supersedes previous proposals. Never list multiple pending drafts.
+9. CONFLICT AWARENESS: When get_context, check_conflicts, or add_event returns conflicts, you MUST prominently alert the user about the clash.
+10. INSPECTING EVENTS: If the user asks for details of an event, call `get_event_details`.
+11. PRONOUN & MULTI-TURN RESOLUTION: If the user asks follow-up questions like 'where is it?', 'when is it?', 'who is going?', or 'what should I bring?', refer back to the active event discussed in recent conversation history! Use its location, time, or attendees to answer directly and call `get_event_details`.
+12. Be warm, concise, and helpful."""
 
 
 
@@ -373,6 +422,18 @@ async def execute_tool(
         plan = propose_event_cancellation(event_title=title_cand, event_id=eid, target_date=t_date)
         plan_card = plan.model_dump()
         result = plan_card
+    elif tool_name == "reschedule_event":
+        title_cand = tool_args.get("event_title") or tool_args.get("title") or tool_args.get("name")
+        eid = tool_args.get("event_id") or tool_args.get("id")
+        t_dt = tool_args.get("target_datetime") or tool_args.get("new_datetime") or tool_args.get("datetime")
+        plan = propose_event_reschedule(event_title=title_cand, event_id=eid, target_datetime=t_dt)
+        plan_card = plan.model_dump()
+        result = plan_card
+    elif tool_name == "get_event_details":
+        title_cand = tool_args.get("event_title") or tool_args.get("title") or tool_args.get("name")
+        eid = tool_args.get("event_id") or tool_args.get("id")
+        t_date = tool_args.get("target_date") or tool_args.get("date")
+        result = get_event_details(event_title=title_cand, event_id=eid, target_date=t_date)
     else:
         result = {"error": f"Unknown tool: {tool_name}"}
 
@@ -400,7 +461,7 @@ async def query_groq(
         raise ValueError("GROQ_API_KEY is not configured.")
 
     url = os.environ.get("GROQ_API_URL") or GROQ_API_URL
-    model = os.environ.get("GROQ_MODEL") or GROQ_MODEL or "openai/gpt-oss-120b"
+    model = os.environ.get("GROQ_MODEL") or GROQ_MODEL
     payload = {
         "model": model,
         "messages": messages,
@@ -423,6 +484,7 @@ async def query_groq(
     msg = choice.get("message", {})
     captured_plan = None
     captured_schedule = None
+    captured_event = None
 
     tool_calls = msg.get("tool_calls", [])
     if tool_calls:
@@ -444,6 +506,8 @@ async def query_groq(
                 captured_plan = plan
             if sched:
                 captured_schedule = sched
+            if name == "get_event_details" and isinstance(tool_res, dict) and tool_res.get("event"):
+                captured_event = tool_res["event"]
 
             messages.append({
                 "role": "tool",
@@ -459,7 +523,8 @@ async def query_groq(
         synthesizer_hint += (
             "Based on the tool results above, write a concise 2-3 sentence response in a friendly, "
             "natural tone. Lead with the most important actionable insight (conflict, departure time, "
-            "rain warning, or packing reminder). Never list raw JSON. Be warm, like talking to a family."
+            "rain warning, or packing reminder). Never list raw JSON. Be warm, like talking to a family. "
+            "CRITICAL: Do NOT call any tools or output JSON on this turn. Write ONLY friendly conversational text."
         )
         payload_turn2 = {
             "model": model,
@@ -472,10 +537,13 @@ async def query_groq(
                 raise RuntimeError(f"HTTP {resp2.status_code} on turn 2: {resp2.text}")
             data2 = resp2.json()
 
-        final_reply = data2.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return final_reply, captured_plan, captured_schedule
+        msg2 = data2.get("choices", [{}])[0].get("message", {})
+        final_reply = msg2.get("content") or ""
+        if not final_reply and msg2.get("tool_calls"):
+            final_reply = "I've processed your request and updated your plan below. Please review and confirm whenever you're ready!"
+        return final_reply, captured_plan, captured_schedule, captured_event
 
-    return msg.get("content", ""), captured_plan, captured_schedule
+    return msg.get("content", ""), captured_plan, captured_schedule, captured_event
 
 
 # ============================================================================
@@ -512,6 +580,7 @@ async def query_ollama(
     msg = data.get("message", {})
     captured_plan = None
     captured_schedule = None
+    captured_event = None
 
     # Check for tool calls
     tool_calls = msg.get("tool_calls", [])
@@ -534,6 +603,8 @@ async def query_ollama(
                 captured_plan = plan
             if sched:
                 captured_schedule = sched
+            if name == "get_event_details" and isinstance(tool_res, dict) and tool_res.get("event"):
+                captured_event = tool_res["event"]
 
             # Append tool response
             messages.append({
@@ -561,20 +632,50 @@ async def query_ollama(
             data2 = resp2.json()
 
         final_reply = data2.get("message", {}).get("content", "")
-        return final_reply, captured_plan, captured_schedule
+        return final_reply, captured_plan, captured_schedule, captured_event
 
-    return msg.get("content", ""), captured_plan, captured_schedule
+    return msg.get("content", ""), captured_plan, captured_schedule, captured_event
 
 
 # ============================================================================
 # Provider 2: Smart Local Tool Fallback (Zero-config)
 # ============================================================================
 
+def extract_active_event_from_history(
+    conversation_history: Optional[List[Dict[str, str]]],
+    events: List[Event],
+) -> Optional[Event]:
+    """
+    Finds the most recently discussed event in multi-turn conversation history.
+    Enables natural follow-ups like 'where is it?', 'when is it?', or 'who is going?'.
+    """
+    if not conversation_history:
+        return None
+
+    # Inspect messages from newest to oldest
+    for turn in reversed(conversation_history):
+        content = (turn.get("content") or "").lower()
+
+        # 1. Check exact full title match across all events first
+        for ev in events:
+            if ev.title.lower() in content:
+                return ev
+
+        # 2. Check distinctive keyword matches
+        for ev in events:
+            words = [w.strip(" '\"") for w in ev.title.lower().split() if len(w) >= 5 and w.strip(" '\"") not in HISTORY_STOPWORDS]
+            if any(w in content for w in words):
+                return ev
+
+    return None
+
+
 async def query_smart_fallback(
     user_msg: str,
     plan_id: Optional[str] = None,
     on_telemetry: Optional[Callable] = None,
-) -> tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+) -> tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
     Deterministically routes user requests to real MCP tools when no external LLM is reachable.
     """
@@ -591,15 +692,70 @@ async def query_smart_fallback(
             "(such as Maya's dentist appointment overlapping with her soccer tournament), "
             "monitor weather forecasts, and generate tournament readiness plans with packing checklists.\n\n"
             "Try asking: *\"What's on our schedule?\"* or *\"Get us ready for Saturday's tournament\"*."
-        ), None, None
+        ), None, None, None
 
-    # 2. Delete / Remove Calendar Event Intent (Human-in-the-Loop)
+    # 2. Reschedule Calendar Event Intent (Human-in-the-Loop)
+    is_reschedule_event = (
+        not plan_id
+        and not any(k in lower for k in ["resolve", "free up", "conflict"])
+        and (
+            any(k in lower for k in [
+                "reschedule", "postpone", "move event", "shift event",
+                "change time", "change date"
+            ]) or (
+                any(k in lower for k in ["move ", "shift "])
+                and any(w in lower for w in [" to ", " from ", " on ", " for "])
+            )
+        )
+    )
+    if is_reschedule_event:
+        target_title = re.sub(
+            r'^(please\s+)?(can\s+(you\s+)?|could\s+(you\s+)?|i\s+asked\s+you\s+to\s+)?(reschedule|move|shift|postpone)\s+(the\s+)?',
+            '',
+            user_msg,
+            flags=re.IGNORECASE
+        ).strip()
+
+        target_dt_str = None
+        target_date_str = None
+
+        # Check for 'from <src> to <dest>'
+        from_to_match = re.search(r'\bfrom\s+(.+?)\s+to\s+(.+)$', target_title, flags=re.IGNORECASE)
+        if from_to_match:
+            target_date_str = from_to_match.group(1).strip()
+            target_dt_str = from_to_match.group(2).strip()
+            target_title = target_title[:from_to_match.start()].strip(" '\",")
+        else:
+            to_match = re.search(r'\b(?:to|on|for)\s+(.+)$', target_title, flags=re.IGNORECASE)
+            if to_match:
+                target_dt_str = to_match.group(1).strip()
+                target_title = target_title[:to_match.start()].strip(" '\",")
+
+        if target_title.lower() in ["it", "this", "that", "the event", "the appointment", ""]:
+            all_evs = get_all_events()
+            active_ev = extract_active_event_from_history(conversation_history, all_evs)
+            target_title = active_ev.title if active_ev else target_title
+
+        _, plan, _ = await execute_tool(
+            "reschedule_event",
+            {"event_title": target_title, "target_datetime": target_dt_str, "target_date": target_date_str},
+            plan_id,
+            on_telemetry
+        )
+        if plan:
+            ev_title = plan.get("title", f"Reschedule: {target_title}").replace("Reschedule: ", "")
+            return (
+                f"I've prepared a reschedule plan for **{ev_title}**. "
+                f"To keep you in control, your calendar has not been modified yet. "
+                f"Please review the proposed time slot below and click **Approve Reschedule** to confirm, or tell me another time that works better for you!"
+            ), plan, None, None
+
+    # 2.5. Delete / Remove Calendar Event Intent (Human-in-the-Loop)
     is_delete_event = (
         any(k in lower for k in DELETE_EVENT_KEYWORDS)
-        or (any(w in lower for w in ["remove", "delete", "cancel"]) and any(w in lower for w in ["event", "appointment", "match", "tournament", "game", "lesson", "practice", "dentist", "soccer", "groceries"]))
+        or (any(w in lower for w in DELETE_EVENT_VERBS) and any(w in lower for w in DELETE_EVENT_NOUNS))
     )
     if is_delete_event:
-        import re
         # Detect any explicit dates or weekdays mentioned
         date_match = re.search(
             r'\b((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s+of\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2}|\b\d{1,2}(?:st|nd|rd|th)\b)\b',
@@ -616,18 +772,18 @@ async def query_smart_fallback(
             f"I've prepared a cancellation card to remove **{ev_title}** from your calendar. "
             f"To keep you in control, your calendar has not been modified yet. "
             f"Please review the cancellation card below and click **Approve Plan** to confirm, or **Dismiss** to keep the event."
-        ), plan, None
+        ), plan, None, None
 
     # 3. Plan Cancellation / Removal Intent
-    is_cancel_plan = any(k in lower for k in PLAN_CANCEL_KEYWORDS) or any(lower == k for k in ["cancel", "discard", "delete", "clear", "remove"])
+    is_cancel_plan = any(k in lower for k in PLAN_CANCEL_KEYWORDS)
     if is_cancel_plan:
         res, _, _ = await execute_tool("discard_plan", {"plan_id": plan_id}, plan_id, on_telemetry)
-        return "🗑️ I've cancelled and cleared your draft plan. Your calendar and schedule remain unchanged.", None, None
+        return "🗑️ I've cancelled and cleared your draft plan. Your calendar and schedule remain unchanged.", None, None, None
 
     # 3. Add Event Intent
     is_add_event = (
         any(k in lower for k in ADD_EVENT_KEYWORDS)
-        or (lower.startswith("add ") and not any(k in lower for k in ["chair", "snack", "towel", "water", "umbrella", "item", "pack", "gear"]))
+        or (lower.startswith("add ") and not any(k in lower for k in PACKING_KEYWORD_MATCHES))
     )
     if is_add_event:
         details = extract_event_details_from_prompt(user_msg)
@@ -655,7 +811,7 @@ async def query_smart_fallback(
         else:
             lines.append("\nAll clear! No overlapping conflicts detected with this event.")
 
-        return "\n".join(lines), None, sched
+        return "\n".join(lines), None, sched, None
 
     # 3. Check for revision of active draft plan (strictly packing or rescheduling, never adding events)
     is_revision = False
@@ -667,11 +823,14 @@ async def query_smart_fallback(
 
     if is_revision and plan_id:
         res, plan, sched = await execute_tool("revise_plan", {"plan_id": plan_id, "instruction": user_msg}, plan_id, on_telemetry)
-        return "I've updated your plan card. Let me know when you'd like to approve it!", plan, sched
+        return "I've updated your plan card. Let me know when you'd like to approve it!", plan, sched, None
 
     # 4. Schedule / Calendar question
-    is_schedule = any(k in lower for k in SCHEDULE_KEYWORDS)
     is_planning = any(k in lower for k in PLANNING_SIGNALS)
+    is_schedule = (
+        any(k in lower for k in SCHEDULE_KEYWORDS)
+        or any(phrase in lower for phrase in ["schedule now", "current schedule", "schedule today", "whats on", "what is on", "what's on", "show calendar", "view calendar"])
+    ) and not any(w in lower for w in PLANNING_ACTION_WORDS)
 
     if is_schedule and not is_planning:
         ctx, _, sched = await execute_tool("get_context", {}, plan_id, on_telemetry)
@@ -679,7 +838,7 @@ async def query_smart_fallback(
         events = ctx.get("events", []) if isinstance(ctx, dict) else []
 
         if not events:
-            return "Your calendar is currently clear. There are no scheduled events.", None, sched
+            return "Your calendar is currently clear. There are no scheduled events.", None, sched, None
 
         lines = ["Here is your current household schedule:\n"]
         for ev in events:
@@ -704,21 +863,72 @@ async def query_smart_fallback(
         else:
             lines.append("\n✅ All clear! No overlapping conflicts detected.")
 
-        return "\n".join(lines), None, sched
+        return "\n".join(lines), None, sched, None
+
+    all_events = get_all_events()
+    active_ev = extract_active_event_from_history(conversation_history, all_events)
+
+    is_pronoun_loc = any(p in lower for p in PRONOUN_LOCATION_PHRASES) or (lower.startswith("where") and any(w in lower for w in [" it", " that", " this"]))
+    is_pronoun_time = any(p in lower for p in PRONOUN_TIME_PHRASES)
+    is_pronoun_att = any(p in lower for p in PRONOUN_ATTENDEES_PHRASES)
+    is_pronoun_gear = any(p in lower for p in PRONOUN_GEAR_PHRASES)
+
+    if (is_pronoun_loc or is_pronoun_time or is_pronoun_att or is_pronoun_gear) and active_ev:
+        details = get_event_details(event_id=active_ev.id).get("event") or active_ev.model_dump()
+        if is_pronoun_loc:
+            loc_name = active_ev.location.name if active_ev.location else (active_ev.location_name or "Home")
+            coords = f" ({active_ev.location.latitude:.4f}°N, {active_ev.location.longitude:.4f}°W)" if (active_ev.location and active_ev.location.latitude) else ""
+            return f"**{active_ev.title}** is located at **{loc_name}**{coords}.", None, None, details
+        elif is_pronoun_time:
+            dt_s = datetime.fromisoformat(active_ev.start_time)
+            dt_e = datetime.fromisoformat(active_ev.end_time)
+            return f"**{active_ev.title}** is scheduled for **{dt_s.strftime('%A, %b %d')}** from **{dt_s.strftime('%I:%M %p')} to {dt_e.strftime('%I:%M %p')}**.", None, None, details
+        elif is_pronoun_att:
+            att_list = ", ".join(active_ev.attendees) if active_ev.attendees else "No specific attendees listed"
+            return f"The attendees for **{active_ev.title}** are: **{att_list}**.", None, None, details
+        elif is_pronoun_gear:
+            gear_list = ", ".join(active_ev.required_items) if active_ev.required_items else "No special gear required"
+            return f"Items needed for **{active_ev.title}**: **{gear_list}**.", None, None, details
+
+    # 4.5. Event Details / Inspection Intent
+    is_event_details = any(k in lower for k in EVENT_DETAILS_KEYWORDS)
+    if is_event_details:
+        target_title = user_msg
+        for k in EVENT_DETAILS_KEYWORDS:
+            if k in lower:
+                target_title = re.sub(rf'^.*?\b{k}\b\s*', '', user_msg, flags=re.IGNORECASE).strip(" '\"?.!")
+                break
+        res, _, _ = await execute_tool("get_event_details", {"event_title": target_title or user_msg}, plan_id, on_telemetry)
+        if isinstance(res, dict) and res.get("success") and res.get("event"):
+            ev = res["event"]
+            ev_title = ev.get("title", "Event")
+            reply_text = f"Here are the full details for **{ev_title}** from your household calendar:"
+            return reply_text, None, None, ev
 
     # 5. Conflict question
     if any(k in lower for k in CONFLICT_KEYWORDS) and not is_planning:
         conflicts, _, _ = await execute_tool("check_conflicts", {}, plan_id, on_telemetry)
         if conflicts:
             c_details = "\n".join(f"• {c['details']}" for c in conflicts)
-            return f"I detected {len(conflicts)} conflict(s) on your calendar:\n{c_details}\n\nWould you like me to reschedule the conflicting event?", None, None
-        return "No conflicts found on your calendar!", None, None
+            return f"I detected {len(conflicts)} conflict(s) on your calendar:\n{c_details}\n\nWould you like me to reschedule the conflicting event?", None, None, None
+        return "No conflicts found on your calendar!", None, None, None
 
     # 6. Weather question
     if any(k in lower for k in WEATHER_KEYWORDS) and not is_planning:
-        fc, _, _ = await execute_tool("get_forecast", {"location": DEFAULT_VENUE_NAME, "date": DEFAULT_TARGET_DATE}, plan_id, on_telemetry)
-        rain_info = f"Rain alert: {fc['precipitation_chance_percent']}% chance of rain." if fc.get("rain_warning") else "No rain expected."
-        return f"The forecast for {fc['location_name']} on {fc['date']} is {fc['temperature_c']}°C with {fc['weather_condition']}. {rain_info}", None, None
+        target_loc = DEFAULT_VENUE_NAME
+        target_date = DEFAULT_TARGET_DATE
+        for ev in get_all_events():
+            loc_label = ev.location_name or (ev.location.name if ev.location else "")
+            if loc_label and loc_label.lower() in lower:
+                target_loc = loc_label
+                if ev.start_time:
+                    target_date = ev.start_time[:10]
+                break
+        fc, _, _ = await execute_tool("get_forecast", {"location": target_loc, "date": target_date}, plan_id, on_telemetry)
+        loc_display = fc.get("location") or fc.get("location_name", target_loc)
+        time_display = fc.get("forecast_time") or fc.get("date", target_date)
+        rain_info = f"Rain alert: {fc.get('precipitation_chance_percent')}% chance of rain." if fc.get("rain_warning") else "No rain expected."
+        return f"The forecast for **{loc_display}** on **{time_display}** is **{fc.get('temperature_c')}°C** with **{fc.get('weather_condition')}**. {rain_info}", None, None, None
 
     # 7. Planning / Coordination Request
     events = get_all_events()
@@ -735,13 +945,13 @@ async def query_smart_fallback(
             f"I found {conf_count} conflict(s), checked the weather forecast, and estimated your departure time. "
             f"Review the plan card below—nothing is saved until you approve it!"
         )
-        return text, plan, None
+        return text, plan, None, None
 
     # 8. Unmatched Request Fallback (Zero Hallucination)
     return (
         "I couldn't find a matching event on your calendar for that request. "
         "You can ask me to **view your schedule**, **add a new event**, or **prepare for Saturday's tournament**."
-    ), None, None
+    ), None, None, None
 
 
 # ============================================================================
@@ -773,16 +983,16 @@ async def chat_with_agent(
     # 1. Groq Cloud Engine (Llama 3.3 70B - Preferred Primary)
     if provider == "groq" or (active_groq_key and provider not in ["ollama", "fallback"]):
         try:
-            reply, plan, sched = await query_groq(messages, plan_id, on_telemetry, user_query=user_message)
+            reply, plan, sched, ev = await query_groq(messages, plan_id, on_telemetry, user_query=user_message)
             if reply and reply.strip():
-                return {"reply": reply, "message": reply, "plan": plan, "schedule": sched}
+                return {"reply": reply, "message": reply, "plan": plan, "schedule": sched, "event": ev}
         except Exception as e:
             print(f"[Agent] Groq query notice ({e}), falling back to smart router.")
 
     # 2. Local Ollama (Only if explicitly selected)
     if provider == "ollama":
         try:
-            reply, plan, sched = await query_ollama(messages, plan_id, on_telemetry, user_query=user_message)
+            reply, plan, sched, ev = await query_ollama(messages, plan_id, on_telemetry, user_query=user_message)
             if reply and reply.strip():
                 # If user asked to add an event, verify it was recorded into database
                 lower = user_message.lower()
@@ -793,10 +1003,10 @@ async def chat_with_agent(
                 if is_add and not sched:
                     details = extract_event_details_from_prompt(user_message)
                     tool_res, _, sched = await execute_tool("add_event", details, plan_id, on_telemetry)
-                return {"reply": reply, "message": reply, "plan": plan, "schedule": sched}
+                return {"reply": reply, "message": reply, "plan": plan, "schedule": sched, "event": ev}
         except Exception as e:
             print(f"[Agent] Ollama query failed ({e}), falling back to smart tool router.")
 
     # 3. Smart local router fallback (Offline / Zero-config)
-    reply, plan, sched = await query_smart_fallback(user_message, plan_id, on_telemetry)
-    return {"reply": reply, "message": reply, "plan": plan, "schedule": sched}
+    reply, plan, sched, ev = await query_smart_fallback(user_message, plan_id, on_telemetry, conversation_history=history)
+    return {"reply": reply, "message": reply, "plan": plan, "schedule": sched, "event": ev}
