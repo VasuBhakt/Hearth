@@ -215,3 +215,38 @@ def test_persistent_session_chat_history():
     assert len(get_chat_history(sess_id)) == 0
 
 
+def test_cancel_disambiguates_by_date():
+    """Validates that cancellation disambiguates multiple events with identical titles by specified date."""
+    from server.db import save_event
+    from server.models import Event, Location
+
+    client.post("/api/reset")
+
+    # Add a second dentist appointment on Monday, October 19, 2026
+    oct19_dentist = Event(
+        id="evt_dentist_oct19",
+        title="Maya's Dentist Appointment",
+        start_time="2026-10-19T09:00:00",
+        end_time="2026-10-19T10:00:00",
+        location=Location(name="Bright Smiles Pediatric Clinic", latitude=40.7128, longitude=-74.0060),
+        attendees=["Maya", "Mom"],
+        description="Follow-up dental checkup",
+        priority=2,
+    )
+    save_event(oct19_dentist)
+
+    # Prompt specifically to cancel October 19th appointment
+    res = client.post("/api/chat", json={"message": "cancel the october 19th appointment"})
+    assert res.status_code == 200
+    plan = res.json()["plan"]
+    assert plan is not None
+
+    # Must target October 19th, NOT October 17th
+    assert plan["target_date"] == "2026-10-19"
+    assert any(
+        a.get("action") == "delete_event" and a.get("event_id") == "evt_dentist_oct19"
+        for a in plan["action_items"]
+    ), f"Expected deletion of evt_dentist_oct19, got {plan['action_items']}"
+
+
+

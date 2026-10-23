@@ -239,8 +239,27 @@ def score_event_match(request: str, event: Event) -> float:
             ev_weekday = calendar.day_name[ev_dt.weekday()].lower()
             if ev_weekday in query_tokens:
                 score += 5.0
+
+            # Month name matching (e.g., "october", "oct")
+            month_full = ev_dt.strftime("%B").lower()
+            month_abbr = ev_dt.strftime("%b").lower()
+            has_month = (month_full in query_tokens or month_abbr in query_tokens)
+
+            # Day number and ordinal matching (e.g., "19", "19th", "17", "17th")
+            day_num = str(ev_dt.day)
+            day_suffix = "th" if 11 <= ev_dt.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(ev_dt.day % 10, "th")
+            day_ordinal = f"{day_num}{day_suffix}"
+            has_day = (day_num in query_tokens or day_ordinal in query_tokens)
+
+            if has_month and has_day:
+                score += 20.0  # Exact month + day match (e.g., "october 19th")
+            elif has_day:
+                score += 10.0  # Specific day match (e.g., "19th")
+            elif has_month:
+                score += 2.0
         except ValueError:
             pass
+
 
     # 2. Inspect all string attributes configured via .env (title, description, etc.)
     for field_name in EVENT_TEXT_FIELDS:
@@ -948,6 +967,7 @@ def discard_plan(plan_id: Optional[str] = None) -> Dict[str, Any]:
 def propose_event_cancellation(
     event_title: Optional[str] = None,
     event_id: Optional[str] = None,
+    target_date: Optional[str] = None,
 ) -> PlanCard:
     """
     Creates a draft PlanCard for cancelling/removing a calendar event with Human-in-the-Loop approval.
@@ -960,15 +980,35 @@ def propose_event_cancellation(
     if event_id:
         target = next((e for e in events if e.id == event_id), None)
 
+    # If target_date is provided, filter candidates to that date first
+    search_pool = events
+    if target_date:
+        t_clean = target_date.strip().lower()
+        date_candidates = []
+        for e in events:
+            try:
+                dt = datetime.fromisoformat(e.start_time)
+                dt_str = f"{dt.strftime('%Y-%m-%d')} {dt.strftime('%B %d')} {dt.strftime('%b %d')} {calendar.day_name[dt.weekday()]}".lower()
+                if t_clean in dt_str or t_clean in e.start_time:
+                    date_candidates.append(e)
+            except Exception:
+                pass
+        if date_candidates:
+            search_pool = date_candidates
+
     if not target and event_title:
-        target = find_target_event(event_title, events)
+        # Full query search including date tokens
+        search_query = f"{event_title} {target_date or ''}".strip()
+        target = find_target_event(search_query, search_pool)
+        if not target and search_pool != events:
+            target = find_target_event(search_query, events)
         if not target:
             clean = event_title.strip().lower()
-            target = next((e for e in events if clean in e.title.lower() or e.title.lower() in clean), None)
+            target = next((e for e in search_pool if clean in e.title.lower() or e.title.lower() in clean), None)
             if not target:
                 words = [w for w in clean.split() if len(w) >= 3 and w not in ["event", "calendar", "schedule", "please", "remove", "delete", "cancel"]]
                 if words:
-                    target = next((e for e in events if any(w in e.title.lower() for w in words)), None)
+                    target = next((e for e in search_pool if any(w in e.title.lower() for w in words)), None)
 
     if not target:
         raise ValueError(f"Could not find any calendar event matching '{event_title or event_id}'.")

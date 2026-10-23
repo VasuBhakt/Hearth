@@ -54,6 +54,11 @@ export function renderPlanCardHtml(plan) {
     `;
   }
 
+  const isCancellation = Boolean(
+    (plan.title && plan.title.startsWith('Cancel:')) ||
+    (plan.action_items && plan.action_items.some((a) => a.action === 'delete_event'))
+  );
+
   // Departure and Date Formatting
   const formattedLeaveTime = formatTime(plan.leave_by);
   const formattedTargetDate = plan.target_date
@@ -111,12 +116,12 @@ export function renderPlanCardHtml(plan) {
   if (plan.proposed_changes && plan.proposed_changes.length > 0) {
     changesHtml = `
       <div class="proposed-changes-box">
-        <div class="section-label">Recommended Strategy</div>
+        <div class="section-label">${isCancellation ? 'Cancellation Details' : 'Recommended Strategy'}</div>
         ${plan.proposed_changes
           .map(
             (ch) => `
           <div class="change-item">
-            <span class="change-bullet">›</span>
+            <span class="change-bullet" style="${isCancellation ? 'color: #ef4444;' : ''}">›</span>
             <span>${escapeHtml(ch)}</span>
           </div>
         `
@@ -132,16 +137,22 @@ export function renderPlanCardHtml(plan) {
     actionsBarHtml = `
       <div class="card-actions-bar">
         <div class="primary-actions-row">
-          <button class="btn-approve" id="btn-approve-${plan.id}" data-plan-id="${plan.id}">
-            <span>✓</span> Approve & Commit Plan
+          <button class="btn-approve" id="btn-approve-${plan.id}" data-plan-id="${plan.id}" style="${isCancellation ? 'background: linear-gradient(135deg, #ef4444, #dc2626);' : ''}">
+            <span>${isCancellation ? '🗑️' : '✓'}</span> ${isCancellation ? 'Confirm & Remove Event' : 'Approve & Commit Plan'}
           </button>
         </div>
+        ${
+          !isCancellation
+            ? `
         <div class="quick-edits-row">
           <span class="quick-edit-label">Quick Adjust:</span>
           <button class="btn-quick-edit" data-edit="Move the dentist to Monday">Move dentist to Monday</button>
           <button class="btn-quick-edit" data-edit="Leave 15 minutes earlier">Leave 15m earlier</button>
           <button class="btn-quick-edit" data-edit="Add folding chairs to packing list">+ Folding chairs</button>
         </div>
+        `
+            : ''
+        }
       </div>
     `;
   } else {
@@ -156,14 +167,20 @@ export function renderPlanCardHtml(plan) {
     `;
   }
 
+  const timePillHtml = plan.leave_by
+    ? isCancellation
+      ? `<span class="plan-time-pill" style="border-color: rgba(239, 68, 68, 0.35); color: #fca5a5;">⏰ Scheduled: ${escapeHtml(formattedLeaveTime)}</span>`
+      : `<span class="plan-time-pill">🚗 Depart ${escapeHtml(formattedLeaveTime)}</span>`
+    : '';
+
   return `
-    <div class="plan-card-widget ${statusClass}" id="card-${plan.id}">
+    <div class="plan-card-widget ${statusClass} ${isCancellation ? 'cancellation-card' : ''}" id="card-${plan.id}">
       <div class="card-header">
         <div class="card-title-group">
           <div class="card-title">${escapeHtml(plan.title)}</div>
           <div class="card-date-sub">
             <span class="plan-date-pill">📅 ${escapeHtml(formattedTargetDate)}</span>
-            ${plan.leave_by ? `<span class="plan-time-pill">🚗 Depart ${escapeHtml(formattedLeaveTime)}</span>` : ''}
+            ${timePillHtml}
           </div>
         </div>
         <span class="card-status-badge ${statusClass}">${statusLabel}</span>
@@ -171,6 +188,9 @@ export function renderPlanCardHtml(plan) {
 
       ${conflictHtml}
 
+      ${
+        !isCancellation
+          ? `
       <div class="plan-metrics-grid">
         <div class="metric-tile">
           <div class="metric-label">🚗 Recommended Departure</div>
@@ -189,6 +209,9 @@ export function renderPlanCardHtml(plan) {
           ${packingChipsHtml}
         </div>
       </div>
+      `
+          : ''
+      }
 
       ${rescheduledEventsHtml}
 

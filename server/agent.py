@@ -240,6 +240,7 @@ MCP_TOOL_DEFINITIONS = [
                 "properties": {
                     "event_title": {"type": "string", "description": "Title or keyword of the event to cancel/delete, e.g. 'Soccer Tournament' or 'Dentist'"},
                     "event_id": {"type": "string", "description": "Optional specific event ID"},
+                    "target_date": {"type": "string", "description": "Optional specific date or day of the event to cancel, e.g. 'October 19th', 'Monday', or '2026-10-19'"},
                 },
                 "required": ["event_title"],
             },
@@ -368,7 +369,8 @@ async def execute_tool(
     elif tool_name == "delete_event":
         title_cand = tool_args.get("event_title") or tool_args.get("title") or tool_args.get("name")
         eid = tool_args.get("event_id") or tool_args.get("id")
-        plan = propose_event_cancellation(event_title=title_cand, event_id=eid)
+        t_date = tool_args.get("target_date") or tool_args.get("date") or tool_args.get("start_time")
+        plan = propose_event_cancellation(event_title=title_cand, event_id=eid, target_date=t_date)
         plan_card = plan.model_dump()
         result = plan_card
     else:
@@ -598,9 +600,17 @@ async def query_smart_fallback(
     )
     if is_delete_event:
         import re
+        # Detect any explicit dates or weekdays mentioned
+        date_match = re.search(
+            r'\b((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}(?:st|nd|rd|th)?\s+of\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{4}-\d{2}-\d{2}|\b\d{1,2}(?:st|nd|rd|th)\b)\b',
+            user_msg,
+            flags=re.IGNORECASE,
+        )
+        target_date_str = date_match.group(0) if date_match else None
+
         target_title = re.sub(r'^(please\s+)?(i\s+asked\s+you\s+to\s+)?(remove|delete|cancel|drop)\s+(the\s+)?', '', user_msg, flags=re.IGNORECASE)
         target_title = re.sub(r'\s+event\b.*', '', target_title, flags=re.IGNORECASE).strip(" '\"")
-        _, plan, _ = await execute_tool("delete_event", {"event_title": target_title}, plan_id, on_telemetry)
+        _, plan, _ = await execute_tool("delete_event", {"event_title": target_title, "target_date": target_date_str}, plan_id, on_telemetry)
         ev_title = plan.get("title", f"Cancel: {target_title}").replace("Cancel: ", "") if plan else target_title
         return (
             f"I've prepared a cancellation card to remove **{ev_title}** from your calendar. "
