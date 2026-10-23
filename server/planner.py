@@ -389,10 +389,11 @@ def parse_natural_datetime(text: str, reference_dt: Optional[datetime] = None) -
     except Exception:
         pass
 
-    # Check if there is a 'from <src> to <dest>' or 'to <dest>' pattern
-    # Avoid matching time ranges like 'from 3pm to 4pm' or 'from 10:00 to 11:00'
-    is_time_range = bool(re.search(r'\bfrom\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s+to\s+\d{1,2}', clean, re.IGNORECASE))
-    if not is_time_range:
+    # Check if there is a 'from <src> to <dest>' or 'to <dest>' pattern where <dest> is the target
+    from_to_match = re.search(r'\bfrom\s+.+?\s+to\s+(.+)$', clean, re.IGNORECASE)
+    if from_to_match:
+        clean = from_to_match.group(1).strip()
+    else:
         to_sub = re.search(r'\bto\s+([a-z0-9].+)$', clean, re.IGNORECASE)
         if to_sub and any(w in clean for w in ["from ", "reschedule", "shift", "move", "postpone"]):
             clean = to_sub.group(1).strip()
@@ -401,13 +402,18 @@ def parse_natural_datetime(text: str, reference_dt: Optional[datetime] = None) -
     clean = re.sub(r'\b(timings?\s+remaining\s+same|same\s+timings?|keep\s+(the\s+)?same\s+times?)\b', '', clean, flags=re.IGNORECASE).strip()
 
     # 2. Extract hour / minute / am_pm
-    time_match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b', clean, re.IGNORECASE)
+    time_match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', clean, re.IGNORECASE)
+    if not time_match:
+        time_match = re.search(r'\b(\d{1,2}):(\d{2})\b', clean, re.IGNORECASE)
+
     hour = ref.hour if reference_dt else 10
     minute = ref.minute if reference_dt else 0
+    has_time = False
     if time_match:
+        has_time = True
         raw_h = int(time_match.group(1))
         raw_m = int(time_match.group(2)) if time_match.group(2) else 0
-        ampm = (time_match.group(3) or "").lower()
+        ampm = (time_match.group(3) or "").lower() if len(time_match.groups()) >= 3 else ""
         if ampm == "pm" and raw_h < 12:
             raw_h += 12
         elif ampm == "am" and raw_h == 12:
@@ -458,6 +464,10 @@ def parse_natural_datetime(text: str, reference_dt: Optional[datetime] = None) -
                 days_ahead = 7
             target_d = ref.date() + timedelta(days=days_ahead)
             return datetime(target_d.year, target_d.month, target_d.day, hour, minute)
+
+    # 5. If time was specified and reference_dt exists, retain reference date
+    if has_time and reference_dt:
+        return datetime(ref.year, ref.month, ref.day, hour, minute)
 
     return None
 
