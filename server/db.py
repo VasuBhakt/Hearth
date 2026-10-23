@@ -406,6 +406,25 @@ def get_plan(plan_id: str) -> Optional[PlanCard]:
         model = session.get(PlanCardModel, plan_id)
         return model.to_pydantic() if model else None
 
+def delete_plan(plan_id: str) -> bool:
+    """Delete a plan card by ID."""
+    with SessionLocal() as session:
+        model = session.get(PlanCardModel, plan_id)
+        if model:
+            session.delete(model)
+            session.commit()
+            return True
+        return False
+
+def delete_draft_plans() -> int:
+    """Deletes all uncommitted draft plans from the database."""
+    with SessionLocal() as session:
+        from sqlalchemy import delete
+        stmt = delete(PlanCardModel).where(PlanCardModel.status == "draft")
+        result = session.execute(stmt)
+        session.commit()
+        return result.rowcount
+
 # --- Approval Token CRUD ---
 
 def save_approval_token(token: ApprovalToken) -> None:
