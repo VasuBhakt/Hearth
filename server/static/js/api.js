@@ -3,6 +3,18 @@
  * All paths and endpoints are dynamic and relative.
  */
 
+// Stable session ID for this browser tab — persists across messages so the server
+// can maintain a rolling conversation history window for multi-turn awareness.
+const _sessionId = (() => {
+  const key = 'hearth_session_id';
+  let id = sessionStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(key, id);
+  }
+  return id;
+})();
+
 export const api = {
   /**
    * Fetches dynamic server and runtime configuration.
@@ -15,12 +27,13 @@ export const api = {
 
   /**
    * Sends a typed or voice user message to the Hearth planner orchestrator.
+   * session_id enables multi-turn conversation history on the server.
    */
   async sendChatMessage(message, planId = null) {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, plan_id: planId }),
+      body: JSON.stringify({ message, plan_id: planId, session_id: _sessionId }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -28,6 +41,7 @@ export const api = {
     }
     return await res.json();
   },
+
 
   /**
    * Human Approval Gate: Mints approval token and commits the plan.

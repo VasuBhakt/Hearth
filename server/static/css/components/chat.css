@@ -85,9 +85,11 @@
   padding: 14px 18px;
   border-radius: var(--radius-md);
   font-size: 0.94rem;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--text-primary);
   box-shadow: var(--shadow-inner-highlight);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat-row.user .message-bubble {
@@ -282,4 +284,177 @@
   opacity: 0.4;
   cursor: not-allowed;
   transform: none;
+}
+
+/* ==========================================================================
+   Schedule Overview Briefing Card Widget
+   ========================================================================== */
+.schedule-card-widget {
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-card);
+  animation: message-appear var(--transition-normal) ease-out;
+  margin-top: 8px;
+  width: 100%;
+}
+
+.schedule-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 12px;
+}
+
+.schedule-card-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.schedule-card-badge {
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.schedule-events-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.schedule-event-item {
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: all var(--transition-fast);
+}
+
+.schedule-event-item.has-conflict {
+  border-color: rgba(239, 68, 68, 0.5);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.12), rgba(15, 23, 42, 0.6));
+  box-shadow: 0 0 15px -3px rgba(239, 68, 68, 0.25);
+}
+
+.schedule-event-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.schedule-event-title {
+  font-weight: 700;
+  font-size: 0.92rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.schedule-event-datetime {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.schedule-event-date {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.schedule-event-time {
+  font-size: 0.74rem;
+  font-family: var(--font-mono);
+  color: #fed7aa;
+  background: rgba(249, 115, 22, 0.12);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.schedule-event-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.schedule-conflict-alert {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  margin-top: 4px;
+}
+
+.schedule-actions-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.btn-schedule-resolve {
+  background: linear-gradient(135deg, var(--primary-ember), #ea580c);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 12px 18px;
+  font-weight: 700;
+  font-size: 0.88rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  transition: all var(--transition-fast);
+  box-shadow: 0 4px 16px rgba(249, 115, 22, 0.35);
+}
+
+.btn-schedule-resolve:hover {
+  background: linear-gradient(135deg, #fb923c, var(--primary-ember));
+  transform: translateY(-1px);
+  box-shadow: 0 6px 22px rgba(249, 115, 22, 0.5);
 }

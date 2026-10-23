@@ -4,9 +4,24 @@
  */
 import { api } from '../api.js';
 import { stateStore } from '../state.js';
+import { formatEventDateTime, formatDate, formatTime } from '../datetime.js';
 
 export function renderPlanCardHtml(plan) {
   if (!plan) return '';
+
+  if (plan.status === 'cancelled') {
+    return `
+      <div class="plan-card-widget cancelled" style="opacity: 0.55; border: 1px dashed rgba(255, 255, 255, 0.2); padding: 16px 20px;">
+        <div class="card-header" style="margin-bottom: 0; padding-bottom: 0; border-bottom: none;">
+          <div class="card-title-group">
+            <div class="card-title" style="text-decoration: line-through; color: var(--text-dim); font-size: 1rem;">${escapeHtml(plan.title)}</div>
+            <div class="card-date-sub" style="margin-top: 2px;">Plan cancelled & removed</div>
+          </div>
+          <span class="card-status-badge draft" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.25);">Cancelled</span>
+        </div>
+      </div>
+    `;
+  }
 
   const isCommitted = plan.status === 'committed';
   const statusClass = isCommitted ? 'committed' : 'draft';
@@ -39,9 +54,11 @@ export function renderPlanCardHtml(plan) {
     `;
   }
 
-  // Departure Tile
-  let leaveTimeStr = plan.leave_by ? plan.leave_by.substring(11, 16) : '--:--';
-  const targetDateStr = plan.target_date || 'Target Event';
+  // Departure and Date Formatting
+  const formattedLeaveTime = formatTime(plan.leave_by);
+  const formattedTargetDate = plan.target_date
+    ? formatDate(plan.target_date, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })
+    : 'Target Event';
 
   // Packing Checklist
   let packingChipsHtml = '';
@@ -58,6 +75,35 @@ export function renderPlanCardHtml(plan) {
       .join('');
   } else {
     packingChipsHtml = '<span class="metric-detail">No items specified.</span>';
+  }
+
+  // Rescheduled Event Timing Badges (if any action items reschedule events)
+  let rescheduledEventsHtml = '';
+  const rescheduleActions = (plan.action_items || []).filter(
+    (a) => a.action === 'reschedule_event' || (a.new_start_time && a.event_title)
+  );
+  if (rescheduleActions.length > 0) {
+    rescheduledEventsHtml = `
+      <div class="plan-rescheduled-events">
+        <div class="section-label">Rescheduled Event Timing</div>
+        <div class="rescheduled-list">
+          ${rescheduleActions
+            .map((item) => {
+              const dtInfo = formatEventDateTime(item.new_start_time, item.new_end_time);
+              return `
+              <div class="rescheduled-item">
+                <span class="rescheduled-title">🔄 ${escapeHtml(item.event_title || 'Event')}</span>
+                <div class="schedule-event-datetime">
+                  <span class="schedule-event-date" title="Rescheduled Date">📅 ${escapeHtml(dtInfo.dateStr)}</span>
+                  <span class="schedule-event-time" title="Rescheduled Time Window">⏰ ${escapeHtml(dtInfo.timeStr)}</span>
+                </div>
+              </div>
+            `;
+            })
+            .join('')}
+        </div>
+      </div>
+    `;
   }
 
   // Proposed Changes Bullets
@@ -115,7 +161,10 @@ export function renderPlanCardHtml(plan) {
       <div class="card-header">
         <div class="card-title-group">
           <div class="card-title">${escapeHtml(plan.title)}</div>
-          <div class="card-date-sub">Scheduled Date: ${escapeHtml(targetDateStr)}</div>
+          <div class="card-date-sub">
+            <span class="plan-date-pill">📅 ${escapeHtml(formattedTargetDate)}</span>
+            ${plan.leave_by ? `<span class="plan-time-pill">🚗 Depart ${escapeHtml(formattedLeaveTime)}</span>` : ''}
+          </div>
         </div>
         <span class="card-status-badge ${statusClass}">${statusLabel}</span>
       </div>
@@ -125,8 +174,8 @@ export function renderPlanCardHtml(plan) {
       <div class="plan-metrics-grid">
         <div class="metric-tile">
           <div class="metric-label">🚗 Recommended Departure</div>
-          <div class="metric-value">Leave by ${leaveTimeStr}</div>
-          <div class="metric-detail">Calculated with travel & buffer window</div>
+          <div class="metric-value">Leave by ${escapeHtml(formattedLeaveTime)}</div>
+          <div class="metric-detail">📅 ${escapeHtml(formatDate(plan.leave_by || plan.target_date))} · Travel & buffer included</div>
         </div>
         <div class="metric-tile">
           <div class="metric-label">🌤️ Venue Forecast</div>
@@ -140,6 +189,8 @@ export function renderPlanCardHtml(plan) {
           ${packingChipsHtml}
         </div>
       </div>
+
+      ${rescheduledEventsHtml}
 
       ${changesHtml}
 

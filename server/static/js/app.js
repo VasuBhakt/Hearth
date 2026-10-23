@@ -54,8 +54,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const res = await api.sendChatMessage(text, currentPlanId);
 
-      // 3. Post assistant response and update active plan
-      stateStore.addMessage('assistant', res.message, res.plan || null);
+      // 3. Post assistant response and update active plan / schedule
+      stateStore.addMessage('assistant', res.message, res.plan || null, res.schedule || null);
     } catch (err) {
       stateStore.addMessage('assistant', `⚠️ Error: ${err.message}`);
     } finally {

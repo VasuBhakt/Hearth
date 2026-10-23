@@ -57,10 +57,37 @@
 }
 
 .card-date-sub {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.plan-date-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+}
+
+.plan-time-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(249, 115, 22, 0.12);
+  color: #fed7aa;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  border-radius: var(--radius-full);
+  padding: 2px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
 }
 
 .card-status-badge {
@@ -321,5 +348,38 @@
 .btn-quick-edit:hover {
   background: rgba(255, 255, 255, 0.09);
   border-color: rgba(255, 255, 255, 0.2);
+  color: var(--text-primary);
+}
+
+/* Rescheduled Event Timing Section */
+.plan-rescheduled-events {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+.rescheduled-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rescheduled-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: rgba(30, 41, 59, 0.5);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.rescheduled-title {
+  font-weight: 600;
+  font-size: 0.85rem;
   color: var(--text-primary);
 }
