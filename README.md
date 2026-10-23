@@ -16,6 +16,7 @@ Unlike agents that directly modify calendar databases, Hearth drafts changes int
    - Schedule conflicts between family members
    - Weather forecast for the venue via Open-Meteo
    - Driving travel time and departure buffers via Haversine calculations
+   - Real-time tool execution telemetry streamed over Server-Sent Events (SSE)
 3. 📋 **Draft Proposal**: The server returns a proposal card containing:
    - Recommended leave-by time
    - Packing checklist (including weather-adapted items like rain gear)
@@ -162,6 +163,12 @@ Hearth/
 ├── requirements.txt       # Dependencies
 └── .env                   # Configuration file
 ```
+
+---
+
+## 📝 Hackathon Resources & Friction Log
+
+* **[Friction Log & Product Feedback](friction_log.md)**: Detailed record of technical hurdles, workarounds, and developer feedback for MCP, AWS Bedrock, Groq, and Open-Meteo.
 
 ---
 
