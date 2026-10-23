@@ -4,6 +4,7 @@ Validates HTML asset delivery, dynamic configuration, conversational orchestrati
 approval token minting/commitment, surgical rollback, and scenario reset.
 """
 import pytest
+import time
 from fastapi.testclient import TestClient
 
 from server.simulator_api import app
@@ -247,6 +248,208 @@ def test_cancel_disambiguates_by_date():
         a.get("action") == "delete_event" and a.get("event_id") == "evt_dentist_oct19"
         for a in plan["action_items"]
     ), f"Expected deletion of evt_dentist_oct19, got {plan['action_items']}"
+
+
+def test_view_saved_event_details():
+    """Validates querying and inspecting rich details of a saved calendar event."""
+    client.post("/api/reset")
+
+    res = client.post("/api/chat", json={"message": "Show details for Maya's soccer tournament"})
+    assert res.status_code == 200
+    data = res.json()
+
+    assert "reply" in data
+    assert data["event"] is not None
+    ev = data["event"]
+
+    assert "Soccer" in ev["title"] or "Tournament" in ev["title"]
+    assert "attendees" in ev
+    assert "Maya" in ev["attendees"]
+    assert "required_items" in ev
+    assert len(ev["required_items"]) > 0
+    assert ev.get("duration_minutes", 0) > 0
+    assert ev.get("location") is not None
+    assert "Riverdale" in (ev["location"].get("name", "") if isinstance(ev["location"], dict) else "")
+    # Should show the event card, not propose a replacement plan
+    assert data["plan"] is None
+
+
+def test_pronoun_followup_and_schedule_typo():
+    """Validates pronoun resolution ('where is it?') and schedule queries with typo ('what are the event's scheduled?')."""
+    client.post("/api/reset")
+    sess_id = "test-session-followups-99"
+
+    # 1. Ask about dentist appointment
+    r1 = client.post("/api/chat", json={
+        "message": "Show details for Maya's Dentist Appointment",
+        "session_id": sess_id,
+    })
+    assert r1.status_code == 200
+    assert r1.json()["event"] is not None
+
+    # 2. Multi-turn follow-up: "where is it?"
+    r2 = client.post("/api/chat", json={
+        "message": "where is it?",
+        "session_id": sess_id,
+    })
+    assert r2.status_code == 200
+    d2 = r2.json()
+    assert "Dentist" in d2["reply"]
+    assert "Bright Smiles" in d2["reply"]
+    assert d2["event"] is not None
+
+    # 3. Schedule question with apostrophe typo: "what are the event's scheduled?"
+    r3 = client.post("/api/chat", json={
+        "message": "what are the event's scheduled?",
+        "session_id": sess_id,
+    })
+    assert r3.status_code == 200
+    d3 = r3.json()
+    assert d3["schedule"] is not None
+    assert len(d3["schedule"]["events"]) >= 2
+    assert "household schedule" in d3["reply"].lower()
+
+
+def test_event_card_actions_weather_and_reschedule():
+    """
+    Validates:
+    1. Weather forecast queries with specific venue & natural date work without crashes.
+    2. Event Reschedule requests produce Reschedule PlanCards (not Cancel cards).
+    3. Reschedule revisions with natural datetimes ('18th oct 2026 3 pm') update to the exact target slot.
+    """
+    client.post("/api/reset")
+    sess_id = "test-card-actions-reschedule-weather-99"
+
+    # 1. Weather forecast check
+    rw = client.post("/api/chat", json={
+        "message": "Weather forecast for Bright Smiles Pediatric Clinic on Sat, Oct 17, 2026",
+        "session_id": sess_id,
+    })
+    assert rw.status_code == 200
+    dw = rw.json()
+    assert "error" not in dw["reply"].lower()
+    assert ("Bright Smiles" in dw["reply"] or "forecast" in dw["reply"].lower() or "c" in dw["reply"].lower())
+
+    # 2. Reschedule Dentist Appointment
+    rr = client.post("/api/chat", json={
+        "message": "Reschedule Maya's Dentist Appointment",
+        "session_id": sess_id,
+    })
+    assert rr.status_code == 200
+    dr = rr.json()
+    plan = dr.get("plan")
+    assert plan is not None, "Expected a draft reschedule plan"
+    assert "Reschedule" in plan["title"], f"Expected Reschedule in title, got: {plan['title']}"
+    assert not plan["title"].startswith("Cancel:")
+    assert any(a.get("action") == "reschedule_event" for a in plan["action_items"])
+
+    # 3. Follow-up: reschedule it on 18th oct 2026 3 pm
+    rr2 = client.post("/api/chat", json={
+        "message": "reschedule it on 18th oct 2026 3 pm",
+        "plan_id": plan["id"],
+        "session_id": sess_id,
+    })
+    assert rr2.status_code == 200
+    dr2 = rr2.json()
+    plan2 = dr2.get("plan")
+    assert plan2 is not None
+    assert "Reschedule" in plan2["title"]
+    assert any(
+        a.get("action") == "reschedule_event" and "2026-10-18T15:00:00" in a.get("new_start_time", "")
+        for a in plan2["action_items"]
+    ), f"Expected new_start_time to be 2026-10-18T15:00:00, got: {plan2['action_items']}"
+
+
+def test_reschedule_with_destination_date_and_db_sync():
+    """
+    Tests that a natural reschedule request specifying source and destination dates
+    (e.g., 'can reschedule maya's football tournament from 19th oct, to 17th oct, with the timings remaining same')
+    generates a concrete reschedule plan targeting Oct 17 with 09:00 start time,
+    commits cleanly to SQLite, and updates the live database schedule.
+    """
+    client = TestClient(app)
+    sess_id = f"test_resched_sync_{int(time.time()*1000)}"
+
+    resp = client.post("/api/chat", json={
+        "message": "can reschedule maya's football tournament from 19th oct, to 17th oct, with the timings remaining same",
+        "session_id": sess_id,
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    plan = data.get("plan")
+    assert plan is not None, f"Expected a draft plan, got response: {data}"
+    assert "Reschedule" in plan["title"]
+    assert plan["target_date"] == "2026-10-17"
+    action = next((a for a in plan.get("action_items", []) if a.get("action") == "reschedule_event"), None)
+    assert action is not None, f"Expected reschedule_event action item, got: {plan.get('action_items')}"
+    assert "2026-10-17T09:00:00" in action.get("new_start_time", "")
+
+    # Approve and commit plan via approval security gate
+    app_resp = client.post("/api/approve", json={"plan_id": plan["id"]})
+    assert app_resp.status_code == 200
+    app_data = app_resp.json()
+    assert app_data["success"] is True
+    assert app_data["commit"]["actions_executed"] == 1
+
+    # Check schedule now
+    sched_resp = client.post("/api/chat", json={
+        "message": "whats the schedule now",
+        "session_id": sess_id,
+    })
+    assert sched_resp.status_code == 200
+    sched_data = sched_resp.json()
+    reply = sched_data.get("reply", "")
+    assert "Oct 17, 2026" in reply or "Oct 17" in reply
+    assert "draft changes haven't been applied yet" not in reply.lower()
+
+
+def test_revise_plan_reschedule_with_time_range_and_departure_update():
+    """
+    Validates that revising an existing plan with:
+    'can you reschedule the appointment on 19th oct to 17th oct, from 3pm to 4pm'
+    correctly extracts 15:00-16:00, updates target_date to 2026-10-17,
+    recalculates plan.leave_by for the 3pm start, and updates the departure strategy cleanly.
+    """
+    client = TestClient(app)
+    client.post("/api/reset")
+    sess_id = f"test_revise_timerange_{int(time.time()*1000)}"
+
+    # 1. Propose initial plan
+    prop_resp = client.post("/api/chat", json={
+        "message": "Get us ready for Maya's dentist appointment",
+        "session_id": sess_id,
+    })
+    assert prop_resp.status_code == 200
+    plan = prop_resp.json().get("plan")
+    assert plan is not None
+    plan_id = plan["id"]
+
+    # 2. Revise plan: move to 17th oct from 3pm to 4pm
+    rev_resp = client.post("/api/chat", json={
+        "message": "can you reschedule the appointment on 19th oct to 17th oct, from 3pm to 4pm",
+        "plan_id": plan_id,
+        "session_id": sess_id,
+    })
+    assert rev_resp.status_code == 200
+    rev_plan = rev_resp.json().get("plan")
+    assert rev_plan is not None
+    assert rev_plan["target_date"] == "2026-10-17"
+    assert "2026-10-17T14:" in rev_plan["leave_by"]
+
+    action = next((a for a in rev_plan.get("action_items", []) if a.get("action") == "reschedule_event"), None)
+    assert action is not None
+    assert "2026-10-17T15:00:00" in action.get("new_start_time", "")
+    assert "2026-10-17T16:00:00" in action.get("new_end_time", "")
+
+    # Check strategy text does not contain ugly echoed raw strings like "to 19Th Oct To 17Th Oct"
+    changes_text = " ".join(rev_plan.get("proposed_changes", []))
+    assert "to 19Th Oct To 17Th Oct" not in changes_text
+    assert "03:00 PM to 04:00 PM" in changes_text
+
+
+
+
+
 
 
 
