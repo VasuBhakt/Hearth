@@ -147,11 +147,37 @@ async def add_event(
 async def delete_event(
     event_title: Optional[str] = None,
     event_id: Optional[str] = None,
+    target_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Builds a draft event cancellation plan card requiring human approval."""
     from planner import propose_event_cancellation
-    plan = propose_event_cancellation(event_title=event_title, event_id=event_id)
+    plan = propose_event_cancellation(event_title=event_title, event_id=event_id, target_date=target_date)
     return plan.model_dump()
+
+
+@mcp.tool(name="reschedule_event", description="Proposes moving or rescheduling an event or appointment. Creates a draft plan card requiring human approval.")
+async def reschedule_event_tool(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+    target_datetime: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Builds a draft event reschedule plan card requiring human approval."""
+    from planner import propose_event_reschedule
+    plan = propose_event_reschedule(event_title=event_title, event_id=event_id, target_datetime=target_datetime)
+    return plan.model_dump()
+
+
+
+@mcp.tool(name="get_event_details", description="Retrieves comprehensive details for a specific saved calendar event including attendees, priority, notes, gear checklist, and conflicts.")
+async def get_event_details_tool(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+    target_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Inspects a specific calendar event in depth."""
+    from tools import get_event_details
+    return get_event_details(event_title=event_title, event_id=event_id, target_date=target_date)
+
 
 
 

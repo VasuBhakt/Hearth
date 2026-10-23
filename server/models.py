@@ -31,6 +31,15 @@ class WeatherForecast(BaseModel):
     wind_speed_kph: Optional[float] = Field(None, description = "Wind speed in kilometers per hour")
     rain_warning: bool = Field(default=False, description="True if rain is expected during outdoor events")
 
+    @property
+    def location_name(self) -> str:
+        return self.location
+
+    @property
+    def date(self) -> str:
+        return self.forecast_time
+
+
 class ConflictReport(BaseModel):
     event1_id: str = Field(..., description="First event ID")
     event2_id: str = Field(..., description="Second event ID")
@@ -50,6 +59,11 @@ class Event(BaseModel):
     description: Optional[str] = Field(None, description="Additional details or notes")
     priority: int = Field(default=1, description="1=Flexible/Routine, 2=Important, 3=Fixed/High")
     required_items: List[str] = Field(default_factory=list, description="Items specifically needed for this event")
+
+    @property
+    def location_name(self) -> str:
+        return self.location.name if self.location else ""
+
 
 class Preference(BaseModel):
     key: str = Field(..., description="Preference setting key") # acts as id

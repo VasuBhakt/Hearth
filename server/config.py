@@ -197,7 +197,7 @@ SIMULATOR_TITLE = parse_env_str(
 LLM_PROVIDER = parse_env_str(os.environ.get("LLM_PROVIDER"), "groq")
 GROQ_API_URL = parse_env_str(os.environ.get("GROQ_API_URL"), "https://api.groq.com/openai/v1/chat/completions")
 GROQ_API_KEY = parse_env_str(os.environ.get("GROQ_API_KEY"), "")
-GROQ_MODEL = parse_env_str(os.environ.get("GROQ_MODEL"), "openai/gpt-oss-120b")
+GROQ_MODEL = parse_env_str(os.environ.get("GROQ_MODEL"), "llama-3.3-70b-versatile")
 GROQ_TEMPERATURE = parse_env_float(os.environ.get("GROQ_TEMPERATURE"), 0.2)
 GROQ_TIMEOUT_SECONDS = parse_env_float(os.environ.get("GROQ_TIMEOUT_SECONDS"), 30.0)
 
@@ -265,8 +265,69 @@ REVISION_KEYWORDS = parse_env_list(
 
 SCHEDULE_KEYWORDS = parse_env_list(
     os.environ.get("SCHEDULE_KEYWORDS"),
-    ["schedule", "events", "calendar", "agenda", "what's on", "what is on", "what do we have"],
+    [
+        "schedule", "events", "calendar", "agenda", "what's on", "what is on", "what do we have",
+        "events scheduled", "event's scheduled", "what is scheduled", "what's scheduled",
+        "all events", "show events", "my events", "our events", "full schedule",
+    ],
 )
+
+PLANNING_ACTION_WORDS = parse_env_list(
+    os.environ.get("PLANNING_ACTION_WORDS"),
+    ["resolve", "reschedule", "fix", "free up", "plan", "prepare"],
+)
+
+PRONOUN_LOCATION_PHRASES = parse_env_list(
+    os.environ.get("PRONOUN_LOCATION_PHRASES"),
+    [
+        "where is it", "where is that", "where is this", "where is the event",
+        "where is it located", "what is the location", "where's it", "where is it at",
+    ],
+)
+
+PRONOUN_TIME_PHRASES = parse_env_list(
+    os.environ.get("PRONOUN_TIME_PHRASES"),
+    [
+        "when is it", "what time is it", "what time does it start",
+        "what time is that", "when is that", "how long is it", "when's it",
+    ],
+)
+
+PRONOUN_ATTENDEES_PHRASES = parse_env_list(
+    os.environ.get("PRONOUN_ATTENDEES_PHRASES"),
+    ["who is going", "who is attending", "who's going", "who will be there", "who goes with"],
+)
+
+PRONOUN_GEAR_PHRASES = parse_env_list(
+    os.environ.get("PRONOUN_GEAR_PHRASES"),
+    ["what do i bring", "what gear", "what items", "what packing", "what should i pack", "what do we need"],
+)
+
+EVENT_DETAILS_KEYWORDS = parse_env_list(
+    os.environ.get("EVENT_DETAILS_KEYWORDS"),
+    [
+        "details for", "details of", "event details", "view event", "inspect event",
+        "show details", "tell me about", "what are the details", "info for", "info on",
+        "information about", "show event", "view details", "open event", "check event",
+        "what time is", "when is",
+    ],
+)
+
+HISTORY_STOPWORDS = set(parse_env_list(
+    os.environ.get("HISTORY_STOPWORDS"),
+    ["appointment", "clinic", "event", "calendar", "schedule", "maya", "maya's", "family", "details"],
+))
+
+DELETE_EVENT_NOUNS = parse_env_list(
+    os.environ.get("DELETE_EVENT_NOUNS"),
+    ["event", "appointment", "match", "tournament", "game", "lesson", "practice", "dentist", "soccer", "groceries"],
+)
+
+DELETE_EVENT_VERBS = parse_env_list(
+    os.environ.get("DELETE_EVENT_VERBS"),
+    ["remove", "delete", "cancel", "drop"],
+)
+
 
 PLANNING_SIGNALS = parse_env_list(
     os.environ.get("PLANNING_SIGNALS"),

@@ -6,6 +6,7 @@ All configurations, URLs, and defaults are dynamically loaded from environment v
 import os
 import sys
 import math
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import httpx
@@ -260,16 +261,60 @@ def estimate_travel(
 # ============================================================================
 
 async def get_forecast(
-    location_name: str,
-    latitude: float,
-    longitude: float,
-    date_str: str,
+    location_name: Optional[str] = None,
+    latitude: Optional[Any] = None,
+    longitude: Optional[float] = None,
+    date_str: Optional[str] = None,
+    **kwargs,
 ) -> WeatherForecast:
     """
     Fetches real-time forecast from Open-Meteo API using async HTTP.
     API base URL is loaded dynamically from OPEN_METEO_API_URL env variable.
     Gracefully falls back to bundled demo forecast if offline or API is unreachable.
+    Accepts (location_name, date_str) or full coordinates dynamically.
     """
+    # Handle shifted positional arguments (e.g. get_forecast("Clinic", "2026-10-17"))
+    if isinstance(latitude, str) and (longitude is None or isinstance(longitude, (int, float))) and date_str is None:
+        date_str = latitude
+        latitude = None
+
+    location_name = location_name or kwargs.get("location") or DEFAULT_VENUE_NAME
+    date_str = date_str or kwargs.get("date") or DEFAULT_TARGET_DATE
+
+    # Normalise date string to YYYY-MM-DD
+    date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', str(date_str))
+    if date_match:
+        date_str = date_match.group(1)
+    else:
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%a, %b %d, %Y", "%A, %B %d, %Y"):
+            try:
+                clean_d = re.sub(r'^(?:sat(?:urday)?|sun(?:day)?|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?),?\s*', '', str(date_str), flags=re.IGNORECASE)
+                parsed_dt = datetime.strptime(clean_d.strip(), fmt.replace("%a, ", "").replace("%A, ", ""))
+                date_str = parsed_dt.strftime("%Y-%m-%d")
+                break
+            except Exception:
+                pass
+
+    # Dynamic coordinate resolution if missing
+    if latitude is None or longitude is None:
+        lat_found, lng_found = None, None
+        events = get_all_events()
+        for ev in events:
+            loc_label = ev.location_name or (ev.location.name if ev.location else "")
+            if location_name and (location_name.lower() in loc_label.lower() or loc_label.lower() in location_name.lower()):
+                if ev.location and ev.location.latitude and ev.location.longitude:
+                    lat_found = ev.location.latitude
+                    lng_found = ev.location.longitude
+                    break
+        latitude = lat_found if lat_found is not None else DEFAULT_VENUE_LATITUDE
+        longitude = lng_found if lng_found is not None else DEFAULT_VENUE_LONGITUDE
+    else:
+        try:
+            latitude = float(latitude)
+            longitude = float(longitude)
+        except Exception:
+            latitude = DEFAULT_VENUE_LATITUDE
+            longitude = DEFAULT_VENUE_LONGITUDE
     params = {
         "latitude": latitude,
         "longitude": longitude,
@@ -520,4 +565,64 @@ def remove_event(
         "event_id": target.id,
         "deleted_event": target.model_dump(),
         "message": f"Successfully removed '{target.title}' from your calendar.",
+    }
+
+
+# ============================================================================
+# 8. get_event_details (Inspect Detailed Calendar Event)
+# ============================================================================
+
+def get_event_details(
+    event_title: Optional[str] = None,
+    event_id: Optional[str] = None,
+    target_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Retrieves full details of a specific calendar event including location,
+    attendees, priority level, notes, required gear, and clash analysis.
+    """
+    events = get_all_events()
+    target = None
+
+    if event_id:
+        target = next((e for e in events if e.id == event_id), None)
+
+    if not target and (event_title or target_date):
+        from planner import find_target_event
+        search_query = f"{event_title or ''} {target_date or ''}".strip()
+        target = find_target_event(search_query, events)
+        if not target and event_title:
+            clean = event_title.strip().lower()
+            target = next((e for e in events if clean in e.title.lower() or e.title.lower() in clean), None)
+
+    if not target:
+        return {
+            "success": False,
+            "message": f"Could not find any calendar event matching '{event_title or event_id or target_date}'.",
+        }
+
+    all_conflicts = check_conflicts(events)
+    clashes = [c.model_dump() for c in all_conflicts if target.id in (c.event1_id, c.event2_id)]
+
+    # Compute duration in minutes
+    duration_minutes = 0
+    try:
+        s_dt = datetime.fromisoformat(target.start_time)
+        e_dt = datetime.fromisoformat(target.end_time)
+        duration_minutes = max(0, int((e_dt - s_dt).total_seconds() / 60))
+    except Exception:
+        pass
+
+    ev_dict = target.model_dump()
+    ev_dict["duration_minutes"] = duration_minutes
+    ev_dict["has_conflicts"] = len(clashes) > 0
+    ev_dict["conflicts"] = clashes
+
+    return {
+        "success": True,
+        "event": ev_dict,
+        "duration_minutes": duration_minutes,
+        "has_conflicts": len(clashes) > 0,
+        "conflicts": clashes,
+        "message": f"Event details retrieved for '{target.title}'.",
     }
